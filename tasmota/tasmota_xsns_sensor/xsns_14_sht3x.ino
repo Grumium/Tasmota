@@ -110,7 +110,7 @@ bool Sht3xRead(uint32_t sensor) {
   int16_t  h_10;
   t_10 = ((((data[0] << 8) | data[1]) * 1750) >> 16) - 450;
   if (type == SHT3X_TYPE_SHT4X) {
-    h_10 = ((((data[3] << 8) | data[4]) * 1250) >> 16) - 6;
+    h_10 = ((((data[3] << 8) | data[4]) * 1250) >> 16) - 60;
   } else {
     h_10 = (((data[3] << 8) | data[4]) * 1000) >> 16;
   }
