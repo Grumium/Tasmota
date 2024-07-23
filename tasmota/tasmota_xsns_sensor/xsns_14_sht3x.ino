@@ -106,16 +106,16 @@ bool Sht3xRead(uint32_t sensor) {
   if ((Sht3xComputeCrc(&data[0], 2) != data[2]) || (Sht3xComputeCrc(&data[3], 2) != data[5])) {
     return false;
   }
-  float t;
-  float h;
-  t = ((((data[0] << 8) | data[1]) * 175) / 65535.0) - 45.0;
+  int16_t t_10;
+  int16_t  h_10;
+  t_10 = ((((data[0] << 8) | data[1]) * 1750) >> 16) - 450;
   if (type == SHT3X_TYPE_SHT4X) {
-    h = ((((data[3] << 8) | data[4]) * 125) / 65535.0) - 6.0;
+    h_10 = ((((data[3] << 8) | data[4]) * 1250) >> 16) - 6;
   } else {
-    h = (((data[3] << 8) | data[4]) * 100) / 65535.0;
+    h_10 = (((data[3] << 8) | data[4]) * 1000) >> 16;
   }
-  sht3x_sensors[sensor].temp = ConvertTemp(t);
-  sht3x_sensors[sensor].humi = ConvertHumidity(h);
+  sht3x_sensors[sensor].temp = ConvertTemp(t_10/10.0f);
+  sht3x_sensors[sensor].humi = ConvertHumidity(h_10/10.0f);
   if (isnan(sht3x_sensors[sensor].temp) || isnan(sht3x_sensors[sensor].humi)) { return false; }
     sht3x_sensors[sensor].valid = SENSOR_MAX_MISS;
   return true;
