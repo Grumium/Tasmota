@@ -36,9 +36,9 @@ While fallback or downgrading is common practice it was never supported due to S
 
 This release will be supported from ESP8266/Arduino library Core version **2.7.8** due to reported security and stability issues on previous Core version. This will also support gzipped binaries.
 
-This release will be supported from ESP32/Arduino library Core version **v3.1.0.241206**.
+This release will be supported from ESP32/Arduino library Core version **v3.1.3.250411**.
 
-Support of ESP8266 Core versions before 2.7.8 and ESP32 Core versions before v3.1.0.241206 have been removed.
+Support of ESP8266 Core versions before 2.7.8 and ESP32 Core versions before v3.1.3.250411 have been removed.
 
 ## Support of TLS
 
@@ -75,12 +75,12 @@ Latest released binaries can be downloaded from
 - http://ota.tasmota.com/tasmota/release
 
 Historical binaries can be downloaded from
-- http://ota.tasmota.com/tasmota/release-14.4.1
+- http://ota.tasmota.com/tasmota/release-14.6.0
 
 The latter links can be used for OTA upgrades too like ``OtaUrl http://ota.tasmota.com/tasmota/release/tasmota.bin.gz``
 
 ### ESP32, ESP32-C2, ESP32-C3, ESP32-C6, ESP32-S2 and ESP32-S3 based
-The following binary downloads have been compiled with ESP32/Arduino library core version **v3.1.0.241206**.
+The following binary downloads have been compiled with ESP32/Arduino library core version **v3.1.3.250411**.
 
 - **tasmota32.bin** = The Tasmota version with most drivers including additional sensors and KNX for 4M+ flash.  **RECOMMENDED RELEASE BINARY**
 - **tasmota32solo1.bin** = The Tasmota version with most drivers including additional sensors and KNX for single core ESP32 and 4M+ flash.
@@ -88,7 +88,7 @@ The following binary downloads have been compiled with ESP32/Arduino library cor
 - **tasmota32s2cdc.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-S2 with serial over embedded USB CDC only and 4M+ flash.
 - **tasmota32s3.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-S3 with USB HWCDC and fallback to serial and 4M+ flash.
 - **tasmota32c2.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-C2 with serial and 4M+ flash.
-- **tasmota32c3.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-C2 with USB HWCDC and fallback to serial and 4M+ flash.
+- **tasmota32c3.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-C3 with USB HWCDC and fallback to serial and 4M+ flash.
 - **tasmota32c6.bin** = The Tasmota version with most drivers including additional sensors and KNX for ESP32-C6 with USB HWCDC and fallback to serial and 4M+ flash.
 - **tasmota32-AD.bin** to **tasmota32-VN.bin** = The Tasmota version in different languages for 4M+ flash.
 - **tasmota32-bluetooth.bin** = The Bluetooth version adds BLE support for 4M+ flash.
@@ -104,7 +104,7 @@ Latest released binaries can be downloaded from
 - https://ota.tasmota.com/tasmota32/release
 
 Historical binaries can be downloaded from
-- https://ota.tasmota.com/tasmota32/release-14.4.1
+- https://ota.tasmota.com/tasmota32/release-14.6.0
 
 The latter links can be used for OTA upgrades too like ``OtaUrl https://ota.tasmota.com/tasmota32/release/tasmota32.bin``
 
@@ -114,58 +114,52 @@ The latter links can be used for OTA upgrades too like ``OtaUrl https://ota.tasm
 
 [Complete list](BUILDS.md) of available feature and sensors.
 
-## Changelog v14.4.1.3
+## Changelog v14.6.0.2
 ### Added
-- Command `SetOption163 1` to disable display of Device name in GUI header
-- Command `FileLog 0..4` to enable logging to filesystem using up to 16 rotating log files of 100kB (`#define FILE_LOG_SIZE 100`)
-- Command `FileLog 10..14` to enable logging to filesystem using up to 16 log files of 100kB (`#define FILE_LOG_SIZE 100`)
-- Command I2sLoop [#22807](https://github.com/arendst/Tasmota/issues/22807)
-- Support for PCF85063 RTC [#22727](https://github.com/arendst/Tasmota/issues/22727)
-- Support for Senseair S88 CO2 sensor [#22733](https://github.com/arendst/Tasmota/issues/22733)
-- Support for ESP32 Two-Wire Automotive Interface (TWAI) or Controller Area Network (CAN) busses
-- GPS driver select baudrate using GPIO GPS_RX1 (9600bps), GPS_RX2 (19200bps) or GPS_RX3 (38400bps) [#22869](https://github.com/arendst/Tasmota/issues/22869)
-- I2S AAC support for web radio [#22787](https://github.com/arendst/Tasmota/issues/22787)
-- I2S Opus stream and file support for opus/aac [#22795](https://github.com/arendst/Tasmota/issues/22795)
-- ESP32 command `PixelType` to change the WS2812 color order and channel number [#22876](https://github.com/arendst/Tasmota/issues/22876)
-- ESP32 TasmotaLED change dynamically the number of pixels [#22754](https://github.com/arendst/Tasmota/issues/22754)
-- ESP32 expand `Pixels` with reverse, height and alternate [#22755](https://github.com/arendst/Tasmota/issues/22755)
-- Display template for Waveshare ESP32-C6 LCD 1.47 [#22863](https://github.com/arendst/Tasmota/issues/22863)
-- Berry `animate.crenel` primitive [#22673](https://github.com/arendst/Tasmota/issues/22673)
-- Berry scroll to Leds_matrix [#22693](https://github.com/arendst/Tasmota/issues/22693)
-- Berry add unicode encoding to string parsing [#22713](https://github.com/arendst/Tasmota/issues/22713)
-- Berry `tasmota.int(v, min, max)` function [#22723](https://github.com/arendst/Tasmota/issues/22723)
-- Berry driver for M5Stack 8encoder [#22724](https://github.com/arendst/Tasmota/issues/22724)
-- Berry add light_pixels values to `tasmota.settings` [#22762](https://github.com/arendst/Tasmota/issues/22762)
-- Berry add `bytes().appendhex()` [#22767](https://github.com/arendst/Tasmota/issues/22767)
-- Berry WS2812 real-time Leds panel as app [#22788](https://github.com/arendst/Tasmota/issues/22788)
-- Berry `serial.read()` read only `n` bytes [#22835](https://github.com/arendst/Tasmota/issues/22835)
-- Berry `tasmota.global.tele_period` and `tasmota.settings.tele_period` [#22865](https://github.com/arendst/Tasmota/issues/22865)
-- Berry driver for AXP2102 and M5CoreS3 [#22878](https://github.com/arendst/Tasmota/issues/22878)
-- LVLG/HASPmota add color names from OpenHASP [#22879](https://github.com/arendst/Tasmota/issues/22879)
+- Provide serial upload port from VSC to PIO [#23436](https://github.com/arendst/Tasmota/issues/23436)
+- Command `JsonPP 0..7` to enable (>0) JSON Pretty Print on user interfaces and set number of indents
+- Command `JsonPP <command>|backlog <command>;...` to enable JSON PP only once
+- Support for multi channel AU915-928 LoRaWanBridge by Rob Clark [#23372](https://github.com/arendst/Tasmota/issues/23372)
+- Support for LoRaWan Rx1 and Rx2 profiles [#23394](https://github.com/arendst/Tasmota/issues/23394)
+- Support for AP33772S USB PD Sink Controller as used in CentyLab RotoPD
+- Allow temporary change of DisplayDimmer [#23406](https://github.com/arendst/Tasmota/issues/23406)
+- WebUI status line for MQTT and TLS, added `FUNC_WEB_STATUS_LEFT` and `FUNC_WEB_STATUS_RIGHT` event [#23354](https://github.com/arendst/Tasmota/issues/23354)
+- WebUI heap status [#23356](https://github.com/arendst/Tasmota/issues/23356)
+- Optional Wifi strength indicator in WebUI status line [#23352](https://github.com/arendst/Tasmota/issues/23352)
+- Wireguard VPN [#23347](https://github.com/arendst/Tasmota/issues/23347)
+- Berry mqtt publish rule processing
+- Berry support for `sortedmap` [#23441](https://github.com/arendst/Tasmota/issues/23441)
+- Berry `introspect.module` option to not cache module entry [#23451](https://github.com/arendst/Tasmota/issues/23451)
+- Berry `webserver.remove_route` to revert `webserver.on` [#23452](https://github.com/arendst/Tasmota/issues/23452)
+- Berry `compile` and `tasmota.compile` option to compile in local context [#23457](https://github.com/arendst/Tasmota/issues/23457)
+- HASPmota `antiburn()` [#23400](https://github.com/arendst/Tasmota/issues/23400)
+- HASPmota auto-dimming when no touch [#23425](https://github.com/arendst/Tasmota/issues/23425)
 
 ### Breaking Changed
 
 ### Changed
-- ESP32 Platform from 2024.12.30 to 2025.01.31, Framework (Arduino Core) from v3.1.0.241206 to v3.1.1.250109 and IDF to 5.3.2 [#22832](https://github.com/arendst/Tasmota/issues/22832)
-- GPIOViewer from v1.5.6 to v1.6.0 (No functional change)
-- Postpone save_data during light animation when fade is Off
-- Allow negative values for AdcParam/AdcGpio INPUT, TEMP and RANGE parameters [#22809](https://github.com/arendst/Tasmota/issues/22809)
-- Command `Pixels` has backwards compatible arguments fixing #22755 [#22791](https://github.com/arendst/Tasmota/issues/22791)
-- ESP32 disable PSRAM check (and on restart some relay toggles) with `#define DISABLE_PSRAMCHECK true` [#21266](https://github.com/arendst/Tasmota/issues/21266)
-- Berry `gpio.pin_mode` frees PWM on pin
-- Berry bit-shift operators to `int64` [#22709](https://github.com/arendst/Tasmota/issues/22709)
-- HASPmota use 'roboto.ttf' for automatic sizing of default font [#22697](https://github.com/arendst/Tasmota/issues/22697)
-- HASPmota add 'tag' attribute for free-form JSON [#22698](https://github.com/arendst/Tasmota/issues/22698)
-- HASPmota support for `tabview` [#22707](https://github.com/arendst/Tasmota/issues/22707)
+- ESP8266 platform update from 2024.09.00 to 2025.05.00 [#23448](https://github.com/arendst/Tasmota/issues/23448)
+- ESP32 Platform from 2025.04.30 to 2025.05.30, Framework (Arduino Core) from v3.1.3.250411 to v3.1.3.250504 and IDF from v5.3.2.250403 to v5.3.3.250501 [#23404](https://github.com/arendst/Tasmota/issues/23404)
+- ESP32 LVGL library from v9.2.2 to v9.3.0 [#23518](https://github.com/arendst/Tasmota/issues/23518)
+- GPIOViewer from v1.6.2 to v1.6.3 (No functional change)
+- Allow command `WebRefresh` minimum from 1000 to 400 mSec
+- Increase number of supported LoRaWan nodes from 4 to 16
+- Format syslog messages according to RFC5424 adding local log time [#23509](https://github.com/arendst/Tasmota/issues/23509)
+- Zigbee improved message when coordinator failed to start [#23525](https://github.com/arendst/Tasmota/issues/23525)
+- Berry change number parser for json to reuse same parser as lexer [#23505](https://github.com/arendst/Tasmota/issues/23505)
+- Berry increase web hooks from 16 to 32 [#23507](https://github.com/arendst/Tasmota/issues/23507)
 
 ### Fixed
-- Shutter discovery message regression from v14.4.1 [#22730](https://github.com/arendst/Tasmota/issues/22730)
-- ESP32-Cx compilation fails on Windows [#22832](https://github.com/arendst/Tasmota/issues/22832)
-- Sonoff SPM `PowerOnState` overrules `SSPMPowerOnState` in mixed 4Relay setup with 4Relay version 1.0.0
-- Webcam compilation with `define USE_WEBCAM` but without `define ENABLE_RTSPSERVER` [#22686](https://github.com/arendst/Tasmota/issues/22686)
-- Berry Zigbee fix wrong attributes [#22684](https://github.com/arendst/Tasmota/issues/22684)
-- Berry walrus operator [#22685](https://github.com/arendst/Tasmota/issues/22685)
-- LVGL updated `Antiburn.tapp` [#22699](https://github.com/arendst/Tasmota/issues/22699)
-- Matter Air Quality sensor [#22708](https://github.com/arendst/Tasmota/issues/22708)
+- DNS setting with `IPAddress4/5` not persisted [#23426](https://github.com/arendst/Tasmota/issues/23426)
+- NimBLE log_level definition conflict [#23366](https://github.com/arendst/Tasmota/issues/23366)
+- Berry `bytes().asstring()` now truncates a string if buffer contains NULL [#23311](https://github.com/arendst/Tasmota/issues/23311)
+- Berry string literals containing NULL are truncated [#23312](https://github.com/arendst/Tasmota/issues/23312)
+- Berry `display.touch_update` wrongly applies resistive calibration [#23363](https://github.com/arendst/Tasmota/issues/23363)
+- Berry `introspect.module()` failed to load modules in files [#23376](https://github.com/arendst/Tasmota/issues/23376)
+- Berry avoid json parsing for unmatched commands [#23494](https://github.com/arendst/Tasmota/issues/23494)
+- Berry integer and real parser to handle overflows [#23495](https://github.com/arendst/Tasmota/issues/23495)
+- Berry potential pointer underflow with `string.endswith` [#23496](https://github.com/arendst/Tasmota/issues/23496)
+- Matter and mDNS can be enabled at the same time [#23373](https://github.com/arendst/Tasmota/issues/23373)
+- Haspmota `haspmota.parse()` page parsing [#23403](https://github.com/arendst/Tasmota/issues/23403)
 
 ### Removed

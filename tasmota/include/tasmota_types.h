@@ -198,7 +198,7 @@ typedef union {                            // Restricted by MISRA-C Rule 18.4 bu
     uint32_t gui_no_state_text : 1;        // bit 15 (v14.3.0.7) - SetOption161 - GUI_NOSHOW_STATETEXT - (GUI) Disable display of state text (1)
     uint32_t no_export_energy_today : 1;   // bit 16 (v14.3.0.7) - SetOption162 - (Energy) Do not add export energy to energy today (1)
     uint32_t gui_device_name : 1;          // bit 17 (v14.4.1.1) - SetOption163 - GUI_NOSHOW_DEVICENAME - (GUI) Disable display of GUI device name (1)
-    uint32_t spare18 : 1;                  // bit 18
+    uint32_t wizmote_enabled : 1;          // bit 18 (v14.4.1.4) - SetOption164 - (WizMote) Enable WiZ Smart Remote support (1)
     uint32_t spare19 : 1;                  // bit 19
     uint32_t spare20 : 1;                  // bit 20
     uint32_t spare21 : 1;                  // bit 21
@@ -252,9 +252,7 @@ typedef union {
     uint32_t spare13 : 1;                  // bit 13
     uint32_t spare14 : 1;                  // bit 14
     uint32_t spare15 : 1;                  // bit 15
-    uint32_t spare16 : 1;                  // bit 16
-    uint32_t spare17 : 1;                  // bit 17
-    uint32_t spare18 : 1;                  // bit 18
+    uint32_t json_pretty_print : 3;        // bit 16.18 (v14.6.0.1) - JSON pretty print log data no or indent
     uint32_t dali_group_sliders : 5;       // bit 19.23 (v14.3.0.3) - (DALI) Number of group sliders 0 to 16
     uint32_t FTP_Mode : 2;                 // bit 24/25
     uint32_t tariff_forced : 2;            // bit 26/27 (v12.4.0.2) - Energy forced tariff : 0=tariff change on time, 1|2=tariff forced

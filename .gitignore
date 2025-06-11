@@ -19,6 +19,7 @@ managed_components
 .cache
 .dummy
 sdkconfig.*
+sdkconfig.defaults
 data
 unpacked_fs
 unpacked_boards
@@ -48,6 +49,9 @@ lib/libesp32/berry/berry
 .vscode/extensions.json
 *.bak
 *.code-workspace
+
+## IntelliJ ######
+.idea
 
 ## Python virtual environments for Platformio ##
 venv

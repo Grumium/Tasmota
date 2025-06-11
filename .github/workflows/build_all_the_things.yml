@@ -31,19 +31,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.13'
       - name: Install dependencies
         run: |
           pip install wheel
-          #python -m pip install --upgrade pip
           pip install -U platformio
-          #platformio upgrade --dev
-          #platformio update
       - name: Run PlatformIO
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: platformio run -e ${{ matrix.variant }}
-      - uses: jason2866/upload-artifact@v2.0.3
+      - uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: ${{ matrix.variant }}
           path: ./build_output
 
   os-check-mac:
@@ -59,19 +59,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
       - name: Install dependencies
         run: |
           pip install wheel
-          #python -m pip install --upgrade pip
           pip install -U platformio
-          #platformio upgrade --dev
-          #platformio update
       - name: Run PlatformIO
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: platformio run -e ${{ matrix.variant }}
-      - uses: jason2866/upload-artifact@v2.0.3
+      - uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: ${{ matrix.variant }}
           path: ./build_output
 
   base-images:
@@ -117,20 +117,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.13'
       - name: Install dependencies
         run: |
           pip install wheel
-          #python -m pip install --upgrade pip
           pip install -U platformio
-          #platformio upgrade --dev
-          #platformio update
           cp ./platformio_override_sample.ini ./platformio_override.ini
       - name: Run PlatformIO
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: platformio run -e ${{ matrix.variant }}
-      - uses: jason2866/upload-artifact@v2.0.3
+      - uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: ${{ matrix.variant }}
           path: ./build_output
 
   language-images:
@@ -140,23 +140,23 @@ jobs:
       fail-fast: true
       matrix:
         variant: [ tasmota ]
-        language: [ AD, AF, BG, BR, CN, CZ, DE, ES, FR, FY, GR, HE, HU, IT, KO, NL, PL, PT, RO, RU, SE, SK, TR, TW, UK, VN ]
+        language: [ AD, AF, BG, BR, CN, CZ, DE, ES, FR, FY, GR, HE, HU, IT, KO, LT, NL, PL, PT, RO, RU, SE, SK, TR, TW, UK, VN ]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.13'
       - name: Install dependencies
         run: |
           pip install wheel
-          #python -m pip install --upgrade pip
           pip install -U platformio
-          #platformio upgrade --dev
-          #platformio update
       - name: Run PlatformIO
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: platformio run -e ${{ matrix.variant }}-${{ matrix.language }}
-      - uses: jason2866/upload-artifact@v2.0.3
+      - uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: ${{ matrix.variant }}-${{ matrix.language }}
           path: ./build_output
