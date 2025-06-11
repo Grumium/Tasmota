@@ -21,6 +21,7 @@
 #ifdef USE_SPI
 #ifdef USE_OPC
 #define XSNS_124                  124
+#define D_CMND_OPC "OPC"
 
 #pragma pack(push, 1)
 
@@ -114,8 +115,6 @@ const OPC_Defaults OPCCommand[] PROGMEM = {
 
 //void* OPCReadTarget[sizeof(OPCCommand)];  
 void* OPCReadTarget[sizeof(OPCCommand) / sizeof(OPCCommand[0])];
-
-#define D_CMND_OPC "OPC"
 
 #ifdef USE_WEBSERVER
 #define WEB_HANDLE_OPC "s124"
@@ -331,7 +330,7 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
 
   uint8_t data[len];
   if (OPCHandleData(reg, 0xF3, len, data)) {
-    AddLog(LOG_LEVEL_INFO, PSTR("%s: handle reg %u len %u"), D_CMND_OPC, reg, len);
+    DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("%s: handle reg %u len %u"), D_CMND_OPC, reg, len);
     if (cmd == OPC_READ_PM || cmd == OPC_READ_HIST) {  
       if (!(OPC.mode & OPC_TYPE_N2)) {
         if (!CheckCRC(data, len)) { AddLog(LOG_LEVEL_INFO, PSTR("CRC check failed.")); return; } // CRC check failed.
@@ -377,7 +376,7 @@ void OPCSpiDisable(void) {
 void HandleOPCAction(void) {
   if (!HttpCheckPriviledgedAccess()) { return; }
   char command[12];
-  snprintf_P(command, sizeof(command), PSTR("%s %d"), WEB_HANDLE_OPC, !(OPC.mode & OPC_FONOFF));
+  snprintf_P(command, sizeof(command), PSTR("SENSOR124 %d"), !(OPC.mode & OPC_FONOFF));
   AddLog(LOG_LEVEL_INFO, PSTR("HandleOPCAction: Executing command: %s"), command);
   ExecuteWebCommand(command);
 }
@@ -446,7 +445,7 @@ void OPCSelectMode(uint16_t mode)
 
   if (mode > 999) {
     OPC.interval = mode / 1000;
-    AddLog(LOG_LEVEL_INFO, PSTR("OPC: set interval to %d seconds"), OPC.setinterval);
+    AddLog(LOG_LEVEL_INFO, PSTR("OPC: set interval to %d seconds"), OPC.interval);
     return;  // Keine weitere Modusverarbeitung, wenn ein Intervall gesetzt wurde
   }
 
@@ -522,8 +521,7 @@ void OPCShow(bool json) {
 
       //AddLog(LOG_LEVEL_INFO, PSTR("N3: PM1=%f, PM2.5=%f, PM10=%f, Temp=%f, Humi=%f, Flow rate=%f"), 
       //        n3->pm_a, n3->pm_b, n3->pm_c, OPC.data.temp, OPC.data.humi, OPC.data.flow);
-
-      AddLog(LOG_LEVEL_INFO, PSTR(
+      DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR(
         "N3 Data: "
         "a=%u, b=%u, c=%u, d=%u, e=%u, f=%u, g=%u, h=%u, i=%u, j=%u, "
         "k=%u, l=%u, m=%u, n=%u, o=%u, p=%u, q=%u, r=%u, s=%u, t=%u, "
@@ -551,21 +549,18 @@ void OPCShow(bool json) {
     //pm1   = OPC.data.pm.pm_a;
     //pm2_5 = OPC.data.pm.pm_b;
     //pm10  = OPC.data.pm.pm_c;
-    AddLog(LOG_LEVEL_INFO, PSTR("N3: PM1=%f, PM2.5=%f, PM10=%f"), 
+    DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("N3: PM1=%f, PM2.5=%f, PM10=%f"), 
     OPC.data.pm.pm_a, OPC.data.pm.pm_b, OPC.data.pm.pm_c);
   }
   if (json) {
-    if (hist_ptr && OPC.data.available) { 
-      if (OPC.mode & OPC_PMHIST) {
-        ResponseAppend_P(PSTR(",\"%s\":{\"PM1\":%1_f,\"PM2.5\":%1_f,\"PM10\":%1_f,"),
-        types,
-        &OPC.data.pm.pm_a, &OPC.data.pm.pm_b, &OPC.data.pm.pm_c);
-        ResponseAppendTHD(OPC.data.temp, OPC.data.humi);
-        ResponseAppend_P(PSTR(",\"" D_JSON_AHUM "\":%4_f"), &OPC.data.abs_humi);
-      }
-      ResponseJsonEnd();
+    ResponseAppend_P(PSTR(",\"%s\":{\"PM1\":%1_f,\"PM2.5\":%1_f,\"PM10\":%1_f,"),
+    types,
+    &OPC.data.pm.pm_a, &OPC.data.pm.pm_b, &OPC.data.pm.pm_c);
+    if (OPC.mode & OPC_PMHIST) {
+      ResponseAppendTHD(OPC.data.temp, OPC.data.humi);
+      ResponseAppend_P(PSTR(",\"" D_JSON_AHUM "\":%4_f"), &OPC.data.abs_humi);
     }
-
+    ResponseJsonEnd();
 #ifdef USE_WEBSERVER
   } else {
 
@@ -590,7 +585,6 @@ void OPCShow(bool json) {
 bool Xsns124(uint32_t function) {
   bool result = false;
   if (FUNC_INIT == function) {
-    AddLog(LOG_LEVEL_INFO, PSTR("%s: PreInit OPC"), D_CMND_OPC);
     OPCPreInit();
   } else {
 
@@ -603,6 +597,9 @@ bool Xsns124(uint32_t function) {
         if (XSNS_124 == XdrvMailbox.index) {
           result = OPCCmd();
         }
+        break;
+      case FUNC_JSON_APPEND:
+        OPCShow(1);
         break;
 #ifdef USE_WEBSERVER
       case FUNC_WEB_SENSOR:
