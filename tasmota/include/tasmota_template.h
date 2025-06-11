@@ -143,6 +143,7 @@ enum UserSelectablePins {
   GPIO_ST7789_CS, GPIO_ST7789_DC,
   GPIO_SSD1331_CS, GPIO_SSD1331_DC,
   GPIO_SDCARD_CS,
+  GPIO_OPC_CS,                         // Alphasense OPC Chip Select
   GPIO_ROT1A_NP, GPIO_ROT1B_NP,        // Rotary switch
   GPIO_ADC_PH,                         // Analog PH Sensor
   GPIO_BS814_CLK, GPIO_BS814_DAT,      // Holtek BS814A2 touch ctrlr
@@ -414,6 +415,7 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_ST7789_CS "|" D_SENSOR_ST7789_DC "|"
   D_SENSOR_SSD1331_CS "|" D_SENSOR_SSD1331_DC "|"
   D_SENSOR_SDCARD_CS "|"
+  D_SENSOR_OPC_CS "|"
   D_SENSOR_ROTARY " A_n|" D_SENSOR_ROTARY " B_n|"
   D_SENSOR_ADC_PH "|"
   D_SENSOR_BS814_CLK "|" D_SENSOR_BS814_DAT "|"
@@ -634,6 +636,9 @@ const uint16_t kGpioNiceList[] PROGMEM = {
 #ifdef USE_NRF24
   AGPIO(GPIO_NRF24_CS),
   AGPIO(GPIO_NRF24_DC),
+#endif
+#ifdef USE_OPC
+  AGPIO(GPIO_OPC_CS),                            // Alphasense OPC Chip Select
 #endif
 #ifdef USE_RC522
   AGPIO(GPIO_RC522_CS),                          // RC522 Rfid Chip Select

@@ -564,7 +564,7 @@ void UBXSetRate(uint16_t interval)
   UBX.Message.cfgRate.cls = 0x06;
   UBX.Message.cfgRate.id = 0x08;
   UBX.Message.cfgRate.len = 6;
-  uint32_t measRate = (1000*(uint32_t)interval); //seconds to milliseconds
+  uint32_t measRate = ((uint32_t)interval); //seconds to milliseconds
   if (measRate > 0xffff) {
     measRate = 0xffff; // max. 65535 ms interval
   }
@@ -655,8 +655,8 @@ void UBXSelectMode(uint16_t mode)
       UBX.mode.runningVPort = 0;
       break;
     default:
-      if (mode>1000 && mode <1066) {
-        UBXSetRate(mode-1000); // set interval between measurements in seconds from 1 to 65
+      if (mode>199 && mode <65000) {
+        UBXSetRate(mode); // set interval between measurements in seconds from 1 to 65
       }
       break;
   }
@@ -730,6 +730,7 @@ void UBXHandleTIME()
   DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time: %u-%u-%u %u:%u:%u"), UBX.Message.navTime.year, UBX.Message.navTime.month ,UBX.Message.navTime.day,UBX.Message.navTime.hour,UBX.Message.navTime.min,UBX.Message.navTime.sec);
  if ((UBX.Message.navTime.valid.UTC == 1) && (UBX.Message.navTime.year >= 2023)) {
     UBX.state.timeOffset =  millis(); // iTOW%1000 should be 0 here, when NTP-server is enabled and in "pure mode"
+    AddLog(LOG_LEVEL_INFO, PSTR("UBX: %d %d"), UBX.state.timeOffset%1000, UBX.Message.navTime.iTOW%1000 );
     DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time is valid"));
     bool resync = (Rtc.utc_time > UBX.utc_time);  // Sync local time every hour
     if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate || UBX.mode.runningNTP || resync) {
@@ -784,7 +785,7 @@ void UBXLoop50msec(void)
   }
   // handle NTP-server
   if(!TasmotaGlobal.global_state.network_down && UBX.mode.runningNTP){
-    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset - NTP_MILLIS_OFFSET);
+    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset);// - NTP_MILLIS_OFFSET);
   }
 }
 

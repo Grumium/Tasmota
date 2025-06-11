@@ -598,7 +598,8 @@
 // xsns_18_pms5003.ino
 #define D_STANDARD_CONCENTRATION "CF-1 PM"     // Standard Particle CF-1 Particle Matter
 #define D_ENVIRONMENTAL_CONCENTRATION "PM"     // Environmetal Particle Matter
-#define D_PARTICALS_BEYOND "Particles"
+#define D_PARTICLES "Particles"
+#define D_PARTICALS_BEYOND "Particles >"
 
 // xsns_27_apds9960.ino
 #define D_GESTURE "Gesture"
@@ -977,6 +978,7 @@
 #define D_SENSOR_WIEGAND_D1    "Wiegand D1"
 #define D_SENSOR_NEOPOOL_TX    "NeoPool Tx"
 #define D_SENSOR_NEOPOOL_RX    "NeoPool Rx"
+#define D_SENSOR_OPC_CS        "OPC CS"
 #define D_SENSOR_VL53LXX_XSHUT "VL53LXX XSHUT"
 #define D_SENSOR_TFMINIPLUS_TX "TFmini+ Tx"
 #define D_SENSOR_TFMINIPLUS_RX "TFmini+ Rx"
@@ -1075,6 +1077,8 @@
 #define D_UNIT_LITER_PER_MINUTE "l/min"
 #define D_UNIT_CUBICMETER_PER_HOUR "m³/h"
 #define D_UNIT_CUBIC_METER "m³"
+#define D_UNIT_PER_CUBIC_CENTIMETER "cm⁻³"
+
 
 #define D_NEW_ADDRESS          "Setting address to"
 #define D_OUT_OF_RANGE         "Out of Range"

@@ -618,6 +618,7 @@ void RtcChipDetect(void) {
 
   if (Rtc.utc_time < START_VALID_TIME) {                          // Not sync with NTP/GPS (time not valid), so read time
     uint32_t time = RtcChip.ReadTime();                           // Read UTC TIME
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: initial sync"));
     if (time > START_VALID_TIME) {
       Rtc.utc_time = time;
       RtcSync(RtcChip.name);
@@ -707,7 +708,7 @@ bool Xdrv56(uint32_t function) {
 
 #ifdef RTC_NTP_SERVER
   switch (function) {
-    case FUNC_EVERY_SECOND:
+    case FUNC_EVERY_50_MSECOND:
       RtcChipEverySecond();
       break;
     case FUNC_COMMAND:

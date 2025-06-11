@@ -450,6 +450,7 @@ void RtcSecond(void) {
     }
   } else {
     if (Rtc.last_synced) {
+      AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: SYNC!!!"));
       Rtc.last_synced = false;
       uint32_t nanos = Rtc.nanos + (millis() - Rtc.millis) * 1000000U;
       Rtc.utc_time += nanos / 1000000000U;

@@ -1,0 +1,15 @@
+name: Quality check
+
+on:
+  push:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  arduino-quality:
+    uses: sensirion/.github/.github/workflows/driver.arduino.check.yml@main
+    with:
+      expect-arduino-examples: true
+      lint-lib-manager-check: update
+

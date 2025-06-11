@@ -2154,7 +2154,8 @@ void GpioInit(void)
                       ValidSpiPinUsed(GPIO_ST7789_CS) ||
                       (ValidSpiPinUsed(GPIO_SSD1331_CS) && ValidSpiPinUsed(GPIO_SSD1331_DC)) ||
                       ValidSpiPinUsed(GPIO_SDCARD_CS) ||
-                      ValidSpiPinUsed(GPIO_MCP2515_CS)
+                      ValidSpiPinUsed(GPIO_MCP2515_CS) ||
+                      ValidSpiPinUsed(GPIO_OPC_CS)
                       );
       // If SPI_CS and/or SPI_DC is used they must be valid
       TasmotaGlobal.spi_enabled = (valid_cs) ? SPI_MOSI_MISO : SPI_NONE;

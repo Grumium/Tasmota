@@ -253,6 +253,7 @@ struct INA3221_Data {
   struct INA3221_Channel_Data  chan[INA3221_NB_CHAN];
   uint8_t enabled_chan;
   uint8_t i2caddr;
+  uint8_t bus;
 };
 
 struct INA3221_Data *Ina3221Data = nullptr;
@@ -291,11 +292,11 @@ bool Ina3221WriteConfig(uint8_t device)
 */
 				
 #ifdef DEBUG_TASMOTA_SENSOR
-  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":WriteConfig: device=%d,  addr:0x%02X, onfiguration register=0x%04X"),device+1, Ina3221Data[device].i2caddr, config);
+  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":WriteConfig: device=%d,  addr:0x%02X, bus:%i, configuration register=0x%04X"),device+1, Ina3221Data[device].i2caddr, Ina3221Data[device].bus, config);
 #endif
 
   // Set Config register
-  if (!I2cWrite16(Ina3221Data[device].i2caddr, INA3221_REG_CONFIG, config))
+  if (!I2cWrite16(Ina3221Data[device].i2caddr, INA3221_REG_CONFIG, config, Ina3221Data[device].bus))
     return false;
 
 //  AddLog(LOG_LEVEL_DEBUG, PSTR(D_INA3221 ":WriteConfig: device=%d,  addr:0x%02X, onfiguration register=0x%04X"),device+1, Ina3221Data[device].i2caddr, config);
@@ -303,15 +304,15 @@ bool Ina3221WriteConfig(uint8_t device)
 }
 #endif
 
-bool Ina3221SetConfig(uint8_t addr)
+bool Ina3221SetConfig(uint8_t addr, uint8_t bus)
 {
   // check if device is a INA3221
   uint16_t manufacturer_id = 0, die_id = 0;
-  if (!I2cValidRead16(&manufacturer_id, addr, INA3221_REG_MANUFACTURER_ID)
+  if (!I2cValidRead16(&manufacturer_id, addr, INA3221_REG_MANUFACTURER_ID, bus)
       || (manufacturer_id != INA3221_MANUFACTURER_ID)
-      || !I2cValidRead16(&die_id, addr, INA3221_REG_DIE_ID)
+      || !I2cValidRead16(&die_id, addr, INA3221_REG_DIE_ID, bus)
       || (die_id != INA3221_DIE_ID)) {
-        AddLog(LOG_LEVEL_DEBUG, PSTR(D_INA3221 ":Skipping device at addr:0x%02X not an " D_INA3221), addr);
+        AddLog(LOG_LEVEL_DEBUG, PSTR(D_INA3221 ":Skipping device at addr:0x%02X bus:%i, not an " D_INA3221), addr, bus);
         AddLog(LOG_LEVEL_DEBUG_MORE, PSTR(D_INA3221 ":SetConfig: manId=0x%04X, dieId=0x%04X"), manufacturer_id, die_id);
         return false;
       }
@@ -319,9 +320,9 @@ bool Ina3221SetConfig(uint8_t addr)
   uint16_t config = INA3221_ENABLE_MASK |
                     INA3221_CONFIG_INIT |
                     INA3221_MODE_SHUNT_AND_BUS_CONTINOUS;
-  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":SetConfig: addr:0x%02X, config=0x%04X"), addr, config);
+  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":SetConfig: addr:0x%02X, bus:%i, config=0x%04X"), addr, bus, config);
   // Set Config register
-  if (!I2cWrite16(addr, INA3221_REG_CONFIG, config))
+  if (!I2cWrite16(addr, INA3221_REG_CONFIG, config, bus))
     return false;
 #endif
 
@@ -332,11 +333,12 @@ bool Ina3221SetConfig(uint8_t addr)
 bool Ina3221PowerDown(uint8_t device)
 {
   uint8_t addr = Ina3221Data[device].i2caddr;
+  uint8_t bus = Ina3221Data[device].bus;
   // write default configuration
   uint16_t config = INA3221_MODE_POWER_DOWN;
-  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":PowerDown: addr:0x%02X, config=0x%04X"), addr, config);
+  DEBUG_SENSOR_LOG(PSTR(D_INA3221 ":PowerDown: addr:0x%02X, bus:%i, config=0x%04X"), addr, bus, config);
   // Set Config register
-  if (!I2cWrite16(addr, INA3221_REG_CONFIG, config))
+  if (!I2cWrite16(addr, INA3221_REG_CONFIG, config, bus))
     return false;
 
   return true;
@@ -383,13 +385,14 @@ bool Ina3221Read(uint8_t device, uint8_t channel)
 //  if (channel>INA3221_NB_CHAN) 
 //	  return false;
   uint8_t addr = Ina3221Data[device].i2caddr;
+  uint8_t bus = Ina3221Data[device].bus;
   int16_t bus_voltage, shunt_voltage;
   struct INA3221_Channel_Data *pChannel = &Ina3221Data[device].chan[channel];
   
  #ifdef INA3221_SUPPLY_SIDE
   if (Ina3221Data[device].enabled_chan & (0x01 << (channel+4))){
  #endif
-    bus_voltage = I2cReadS16(addr, INA3221_REG_BUS_VOLTAGE_CH(channel));
+    bus_voltage = I2cReadS16(addr, INA3221_REG_BUS_VOLTAGE_CH(channel), bus);
  #ifdef DEBUG_TASMOTA_SENSOR
     DEBUG_SENSOR_LOG(D_INA3221 ":GetBusVoltage: RegVBus[%d:%d](0x%02X) = 0x%04X = %d", device, channel, INA3221_REG_BUS_VOLTAGE_CH(channel), bus_voltage, bus_voltage);
  #endif
@@ -402,7 +405,7 @@ bool Ina3221Read(uint8_t device, uint8_t channel)
     pChannel->voltage = NAN;
   }
   if ((fabs(pChannel->shunt)) > 0.0f) {
-    shunt_voltage = I2cReadS16(addr, INA3221_REG_SHUNT_VOLTAGE_CH(channel)); 
+    shunt_voltage = I2cReadS16(addr, INA3221_REG_SHUNT_VOLTAGE_CH(channel), bus); 
  #ifdef DEBUG_TASMOTA_SENSOR
     DEBUG_SENSOR_LOG(D_INA3221 ":GetShuntVoltage: RegSh[%d:%d](0x%02X) = 0x%04X = %d", device, channel, INA3221_REG_SHUNT_VOLTAGE_CH(channel), shunt_voltage, shunt_voltage);
  #endif
@@ -414,7 +417,7 @@ bool Ina3221Read(uint8_t device, uint8_t channel)
 //    AddLog(LOG_LEVEL_DEBUG, PSTR(D_INA3221 ":GetShuntVoltage: RegSh[%d:%d](0x%02X) = 0x%04X = %d current=%5_f"),device, channel, INA3221_REG_SHUNT_VOLTAGE_CH(channel), shunt_voltage, shunt_voltage, &pChannel->current);
  #else
   if (pChannel->shunt > 0.0f) {
-    shunt_voltage = I2cReadS16(addr, INA3221_REG_SHUNT_VOLTAGE_CH(channel));
+    shunt_voltage = I2cReadS16(addr, INA3221_REG_SHUNT_VOLTAGE_CH(channel), bus);
  #ifdef DEBUG_TASMOTA_SENSOR
     DEBUG_SENSOR_LOG(D_INA3221 ":GetShuntVoltage: RegSh[%d:%d](0x%02X) = 0x%04X = %d", device, channel, INA3221_REG_SHUNT_VOLTAGE_CH(channel), shunt_voltage, shunt_voltage);
  #endif
@@ -497,40 +500,44 @@ void Ina3221Detect(void)
   _ina3221_current_device = 0;
   Ina3221count = 0;
 //  ????
-  for (uint32_t i = 0; i < INA3221_MAX_COUNT; i++) {
-    uint16_t addr = INA3221_ADDRESS(i);
-    if (!I2cSetDevice(addr)) { continue; }
-    if (!Ina3221Data) {
-// bf ... calloc(INA3221_MAX_COUNT ... ??
-	Ina3221Data = (struct INA3221_Data*)calloc(INA3221_MAX_COUNT,sizeof(struct INA3221_Data));
+  AddLog(LOG_LEVEL_INFO,PSTR(D_INA3221 ": Detect?"));
+  for (uint32_t bus = 0; bus < 2; bus++) {
+    for (uint32_t i = 0; i < INA3221_MAX_COUNT; i++) {
+      uint16_t addr = INA3221_ADDRESS(i);
+      if (!I2cSetDevice(addr, bus)) { continue; }
       if (!Ina3221Data) {
-        AddLog(LOG_LEVEL_ERROR,PSTR(D_INA3221 ": Mem allocation error"));
-        return;
+        // bf ... calloc(INA3221_MAX_COUNT ... ??
+        Ina3221Data = (struct INA3221_Data*)calloc(INA3221_MAX_COUNT,sizeof(struct INA3221_Data));
+        if (!Ina3221Data) {
+          AddLog(LOG_LEVEL_ERROR,PSTR(D_INA3221 ": Mem allocation error"));
+          return;
+        }
       }
-    }
-	// bf.. Ina3221SetConfig(addr)) erweitern om device !!
-      if (Ina3221SetConfig(addr)) {
-      I2cSetActiveFound(addr, INA3221_TYPE);
-      Ina3221Data[Ina3221count].i2caddr = addr;
-      #ifdef INA3221_SUPPLY_SIDE
-      Ina3221Data[Ina3221count].enabled_chan = INA3221_ENABLE_CHAN(i);
-      if (!Ina3221WriteConfig(Ina3221count)){
+      // bf.. Ina3221SetConfig(addr, bus)) erweitern om device !!
+      if (Ina3221SetConfig(addr, bus)) {
+          I2cSetActiveFound(addr, INA3221_TYPE, bus);
+          Ina3221Data[Ina3221count].i2caddr = addr;
+          Ina3221Data[Ina3221count].bus = bus;
+        #ifdef INA3221_SUPPLY_SIDE
+        Ina3221Data[Ina3221count].enabled_chan = INA3221_ENABLE_CHAN(i);
+        if (!Ina3221WriteConfig(Ina3221count)){
+          Ina3221count++;
+      continue;
+      }
+        #else
+        Ina3221Data[Ina3221count].enabled_chan = 0;
+      #endif
+        for (uint32_t j = 0; j < INA3221_NB_CHAN; j++) {
+          Ina3221Data[Ina3221count].chan[j].shunt = 0.0f;
+          #ifdef INA3221_CALC_CHARGE_AH
+          Ina3221Data[Ina3221count].chan[j].charge_ah = 0.0f;
+          #endif
+          #ifdef INA3221_CALC_ENERGY_WH
+          Ina3221Data[Ina3221count].chan[j].energy_wh = 0.0f;
+          #endif
+        }
         Ina3221count++;
-		continue;
-	  }
-      #else
-      Ina3221Data[Ina3221count].enabled_chan = 0;
-	  #endif
-      for (uint32_t j = 0; j < INA3221_NB_CHAN; j++) {
-        Ina3221Data[Ina3221count].chan[j].shunt = 0.0f;
-        #ifdef INA3221_CALC_CHARGE_AH
-        Ina3221Data[Ina3221count].chan[j].charge_ah = 0.0f;
-        #endif
-        #ifdef INA3221_CALC_ENERGY_WH
-        Ina3221Data[Ina3221count].chan[j].energy_wh = 0.0f;
-        #endif
       }
-      Ina3221count++;
     }
   }
   if (!Ina3221count && Ina3221Data) {

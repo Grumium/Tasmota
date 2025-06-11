@@ -27,10 +27,10 @@ bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs)
 {
   // millisecs is millis() at the time of the last iTOW reception, where iTOW%1000 == 0
   uint32_t refMillis = millis()-millisecs;
-  if (refMillis>999){
-    utc++;
+  //if (refMillis>999){
+  //  utc++;
     refMillis = refMillis%1000;
-  }
+  //}
 
   bool processed = false;
 

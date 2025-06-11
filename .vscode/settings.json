@@ -70,5 +70,30 @@
         "tooltip": "PlatformIO: Rebuild IntelliSense Index",
         "commands": "platformio-ide.rebuildProjectIndex"
       }
-    ]
+    ],
+    "files.associations": {
+      "regex": "cpp",
+      "cstdint": "cpp",
+      "compare": "cpp",
+      "functional": "cpp",
+      "bitset": "cpp",
+      "algorithm": "cpp",
+      "array": "cpp",
+      "string": "cpp",
+      "string_view": "cpp",
+      "cstring": "cpp",
+      "cstdlib": "cpp",
+      "random": "cpp",
+      "initializer_list": "cpp",
+      "*.tcc": "cpp",
+      "deque": "cpp",
+      "list": "cpp",
+      "unordered_map": "cpp",
+      "unordered_set": "cpp",
+      "vector": "cpp",
+      "system_error": "cpp",
+      "sstream": "cpp",
+      "cmath": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
   }

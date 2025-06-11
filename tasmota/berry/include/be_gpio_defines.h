@@ -195,6 +195,7 @@ const be_const_member_t lv_gpio_constants[] = {
     { "NRG_SEL", (int32_t) GPIO_NRG_SEL },
     { "NRG_SEL_INV", (int32_t) GPIO_NRG_SEL_INV },
     { "OLED_RESET", (int32_t) GPIO_OLED_RESET },
+    { "OPC_CS", (int32_t) GPIO_OPC_CS },
     { "OPEN_DRAIN", OPEN_DRAIN },
     { "OPTION_A", (int32_t) GPIO_OPTION_A },
     { "OPTION_E", (int32_t) GPIO_OPTION_E },
