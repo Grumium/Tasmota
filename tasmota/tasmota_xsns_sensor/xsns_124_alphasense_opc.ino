@@ -30,6 +30,8 @@ typedef enum {
   OPC_WRITE_LON,
   OPC_WRITE_FOFF,
   OPC_WRITE_FON,
+  OPC_WRITE_LGAIN,
+  OPC_WRITE_HGAIN,
   OPC_READ_SN,
   OPC_READ_FW,
   OPC_READ_STATUS,
@@ -103,6 +105,9 @@ const OPC_Defaults OPCCommand[] PROGMEM = {
   { 0x03, { 0x02, 0x07, 0x00, 0x00 }},  // OPC_WRITE_LON
   { 0x03, { 0x05, 0x02, 0x00, 0x03 }},  // OPC_WRITE_FOFF
   { 0x03, { 0x04, 0x03, 0x03, 0x00 }},  // OPC_WRITE_FON
+  { 0x03, { 0x00, 0x08, 0x00, 0x00 }},  // OPC_WRITE_LGAIN
+  { 0x03, { 0x00, 0x09, 0x00, 0x00 }},  // OPC_WRITE_HGAIN
+  
   { 0x10, {60, 60, 60, 60} },  // OPC_READ_SN
   { 0x12, {4, 4, 4, 4} },  // OPC_READ_FW
   { 0x13, {4, 6, 0, 0} },   // OPC_READ_STATUS
