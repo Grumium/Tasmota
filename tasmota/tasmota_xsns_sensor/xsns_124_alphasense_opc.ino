@@ -64,7 +64,7 @@ typedef struct {
 } hist_n2data_t;
 
 typedef struct {
-  uint16_t a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x;
+  uint16_t bins[24];
   uint8_t mtof_a, mtof_c, mtof_e, mtof_g;
   uint16_t period, flow, temp, humi;
   float pm_a, pm_b, pm_c;
@@ -159,6 +159,32 @@ struct OPC_T {
   //struct STATUS_T {
   //  uint8_t fan_on, laser_on, fan_dac, laser_dac, laser_sw, gain;
   //};
+  struct CONFIG_T {
+    // 16-bit ADC Bin boundaries (BB0 - BB24)
+    uint16_t bin_boundaries_adc[25];         // [0] - [24]
+    // 16-bit Bin boundaries in µm * 100 (BBD0 - BBD24)
+    uint16_t bin_boundaries_um100[25];       // [0] - [24]
+    // 16-bit Bin weighting factors (BW0 - BW23)
+    uint16_t bin_weightings[24];   // [0] - [23]
+    // PM measurement boundaries in µm * 100
+    struct {
+      uint16_t a;  // M_A
+      uint16_t b;  // M_B
+      uint16_t c;  // M_C
+    } pm_diameters;
+    // weitere 16-bit Konfigurationswerte
+    uint16_t max_tof;                      // MaxTOF
+    uint16_t am_sampling_interval_count;  // AMSamplingIntervalCount
+    uint16_t am_idle_interval_count;      // AMIdleIntervalCount
+    uint16_t am_max_data_arrays;          // AMMaxDataArraysInFile
+    // 8-bit Konfigurationsflags
+    uint8_t am_only_save_pm;              // AMOnlySavePMData
+    uint8_t am_fan_on_idle;               // AMFanOnInIdle
+    uint8_t am_laser_on_idle;             // AMLaserOnInIdle
+    uint8_t tof_to_sfr_factor;            // TOF to SFR factor
+    uint8_t pvp;                          // Particle Validation Period
+    uint8_t bin_weighting_index;         // BinWeightingIndex
+  } config;
 
   struct DATA_T {
   //  POWER_T power;
@@ -237,6 +263,7 @@ bool OPCInit(void) {
       //OPCAllocateMem(i);  // Speicher für Histogramm-Struktur allokieren
 
       OPCReadTarget[OPC_READ_PM]     = &OPC.data.pm;
+      OPCReadTarget[OPC_READ_CONFIG]     = &OPC.config;
       //if (*OPC_AllocTable[i].ptr == nullptr) {
       //  AddLog(LOG_LEVEL_ERROR, PSTR("OPC: Memory allocation failed for type %u"), i);
       //  return false;
@@ -273,7 +300,10 @@ void OPCLoop(void) {
       if ((OPC.mode & 0x0F) == 0) { //if no OPC, do the init!
         AddLog(LOG_LEVEL_INFO, PSTR("%s: Searching sensor..."), D_CMND_OPC);
         //AddLog(LOG_LEVEL_INFO, PSTR("OPC mode after init: 0x%02X"), OPC.mode);
-        if (OPCInit()) {OPC.setmode = OPC.mode &= ~0x10;}
+        if (OPCInit()) {
+          OPC.setmode = OPC.mode &= ~0x10;
+          OPCReadDataToStruct(OPC_READ_CONFIG);
+        }
         return;
       }
     // READ INTERVAL
@@ -336,7 +366,7 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
   uint8_t data[len];
   if (OPCHandleData(reg, 0xF3, len, data)) {
     DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("%s: handle reg %u len %u"), D_CMND_OPC, reg, len);
-    if (cmd == OPC_READ_PM || cmd == OPC_READ_HIST) {  
+    if (cmd == OPC_READ_PM || cmd == OPC_READ_HIST ) {  
       if (!(OPC.mode & OPC_TYPE_N2)) {
         if (!CheckCRC(data, len)) { AddLog(LOG_LEVEL_INFO, PSTR("CRC check failed.")); return; } // CRC check failed.
         memcpy(target, data, len-2);
@@ -344,12 +374,15 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
         return;
       }
       memcpy(target, data, len);
+    }
+    if (cmd == OPC_READ_CONFIG ) {  
+      memcpy(target, data, len);
+
         //uint8_t *ptr = (uint8_t*)target;
         //for (size_t i = 0; i < len; i++) {
         //  AddLog(LOG_LEVEL_INFO, PSTR("Byte[%u] = 0x%02X\n"), i, ptr[i]);
         //}
     }
-
     //AddLog(LOG_LEVEL_INFO, PSTR("%s: Read len is %u and struct %u."), D_CMND_OPC, len, sizeof(HIST_N3_T));
   }
 }
@@ -526,20 +559,35 @@ void OPCShow(bool json) {
 
       //AddLog(LOG_LEVEL_INFO, PSTR("N3: PM1=%f, PM2.5=%f, PM10=%f, Temp=%f, Humi=%f, Flow rate=%f"), 
       //        n3->pm_a, n3->pm_b, n3->pm_c, OPC.data.temp, OPC.data.humi, OPC.data.flow);
+/*       
+      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin boundaries (ADC):"));
+      for (int i = 0; i < 25; i++) {
+        AddLog(LOG_LEVEL_INFO, PSTR("  ADC[%02d] = %u"), i, OPC.config.bin_boundaries_adc[i]);
+      }
+
+      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin boundaries (um * 100):"));
+      for (int i = 0; i < 25; i++) {
+        AddLog(LOG_LEVEL_INFO, PSTR("  UM100[%02d] = %u"), i, OPC.config.bin_boundaries_um100[i]);
+      }
+
+      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin weightings:"));
+      for (int i = 0; i < 24; i++) {
+        AddLog(LOG_LEVEL_INFO, PSTR("  Weight[%02d] = %u"), i, OPC.config.bin_weightings[i]);
+      } */
+    
+
+
+
+      for (int i = 0; i < 24; i++) {
+        DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("Bin[%02d] = %u"), i, n3->bins[i]);
+      }
       DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR(
-        "N3 Data: "
-        "a=%u, b=%u, c=%u, d=%u, e=%u, f=%u, g=%u, h=%u, i=%u, j=%u, "
-        "k=%u, l=%u, m=%u, n=%u, o=%u, p=%u, q=%u, r=%u, s=%u, t=%u, "
-        "u=%u, v=%u, w=%u, x=%u, "
         "mtof_a=%u, mtof_c=%u, mtof_e=%u, mtof_g=%u, "
         "period=%u, flow=%s, temp=%f, humi=%f, "
         "pm_a=%f, pm_b=%f, pm_c=%f, "
         "rej_cnt_gli=%u, rej_cnt_lon=%u, rej_cnt_rat=%u, rej_cnt_oor=%u, "
         "fan_rev_cnt=%u, las_status=%u"
       ),
-        n3->a, n3->b, n3->c, n3->d, n3->e, n3->f, n3->g, n3->h, n3->i, n3->j,
-        n3->k, n3->l, n3->m, n3->n, n3->o, n3->p, n3->q, n3->r, n3->s, n3->t,
-        n3->u, n3->v, n3->w, n3->x,
         n3->mtof_a, n3->mtof_c, n3->mtof_e, n3->mtof_g,
         n3->period, OPC.data.flowstr, OPC.data.temp, OPC.data.humi,
         n3->pm_a, n3->pm_b, n3->pm_c,
@@ -558,13 +606,14 @@ void OPCShow(bool json) {
     OPC.data.pm.pm_a, OPC.data.pm.pm_b, OPC.data.pm.pm_c);
   }
   if (json) {
-    ResponseAppend_P(PSTR(",\"%s\":{\"PM1\":%1_f,\"PM2.5\":%1_f,\"PM10\":%1_f,"),
+    ResponseAppend_P(PSTR(",\"%s\":{\"PM1\":%1_f,\"PM2_5\":%1_f,\"PM10\":%1_f"),
     types,
     &OPC.data.pm.pm_a, &OPC.data.pm.pm_b, &OPC.data.pm.pm_c);
     if (OPC.mode & OPC_PMHIST) {
+      ResponseAppend_P(PSTR(","));
       ResponseAppendTHD(OPC.data.temp, OPC.data.humi);
       ResponseAppend_P(PSTR(",\"" D_JSON_AHUM "\":%4_f"), &OPC.data.abs_humi);
-    }
+    } // else { }
     ResponseJsonEnd();
 #ifdef USE_WEBSERVER
   } else {
