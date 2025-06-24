@@ -70,8 +70,10 @@ const uint16_t HTTP_OTA_RESTART_RECONNECT_TIME = 10000;  // milliseconds - Allow
 #endif
 
 #ifdef USE_ALPINEJS
-#include "include/alpinejs.h"
-#endif  // USE_ALPINEJS
+  #include "include/alpinejs.h"
+#elif defined(USE_ALPINEJS3)
+  #include "include/alpinejs3.h"
+#endif  // USE_ALPINEJS 2 or 3
 
 const char HTTP_SCRIPT_COUNTER[] PROGMEM =
   "var cn=180;"                           // seconds
@@ -690,7 +692,7 @@ void StartWebserver(int type) {
 //      Webserver->on(F("/u2"), HTTP_POST, HandleUploadDone, HandleUploadLoop);  // this call requires 2 functions so we keep a direct call
       Webserver->on("/u2", HTTP_POST, HandleUploadDone, HandleUploadLoop);  // this call requires 2 functions so we keep a direct call
 #ifndef FIRMWARE_MINIMAL
-#ifdef USE_ALPINEJS
+#if defined(USE_ALPINEJS) || defined(USE_ALPINEJS3)
       Webserver->on("/alpinejs", HTTP_ANY, HandleAlpinejsRequest);
 #endif // USE_ALPINEJS
       XdrvXsnsCall(FUNC_WEB_ADD_HANDLER);
@@ -1392,6 +1394,13 @@ void HandleRoot(void) {
 
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP D_MAIN_MENU));
 
+
+#ifdef USE_TASMOVIEW
+  Webserver->sendHeader("Location", String("http://") + IPForUrl(WiFi.localIP()) +String("/fs?name=dashboard.html"), true);  // <-- Deine Ziel-URL hier eintragen
+  Webserver->send(302, "text/plain", "Redirecting...");
+  return;
+#endif
+
   /*
   Display GUI with items in following order:
   - Header with module name and device name
@@ -2008,9 +2017,9 @@ bool HandleRootStatusRefresh(void) {
 
 #ifndef FIRMWARE_MINIMAL
 
-#ifdef USE_ALPINEJS
+#if defined(USE_ALPINEJS) || defined(USE_ALPINEJS3)
 /*********************************************************************************************\
- * Serve AlpineJS 2.8.2 in gzip format
+ * Serve AlpineJS 2.8.2 or 3.14.9 in gzip format
  * Content-Encoding: gzip
  * Content-Type: text/javascript
 \*********************************************************************************************/
@@ -2025,7 +2034,7 @@ void HandleAlpinejsRequest(void) {
   Webserver->sendContent_P(alpine_min_js_gz, sizeof(alpine_min_js_gz));
   Webserver->client().stop();
 }
-#endif  // USE_ALPINEJS
+#endif  // USE_ALPINEJS || USE_ALPINEJS3
 
 /*********************************************************************************************\
  * HandleConfiguration

@@ -93,7 +93,12 @@
       "vector": "cpp",
       "system_error": "cpp",
       "sstream": "cpp",
-      "cmath": "cpp"
+      "cmath": "cpp",
+      "ratio": "cpp",
+      "tuple": "cpp",
+      "type_traits": "cpp",
+      "utility": "cpp",
+      "typeinfo": "cpp"
     },
     "C_Cpp.errorSquiggles": "disabled"
   }
