@@ -208,7 +208,6 @@ struct OPC_T {
     uint8_t tof_to_sfr_factor;            // TOF to SFR factor
     uint8_t pvp;                          // Particle Validation Period
     uint8_t bin_weighting_index;         // BinWeightingIndex
-    bool news;
   } config;
   struct STATUS_T {
     uint8_t fan_on, laser_on, fan_dac, laser_dac, laser_sw, gain;
@@ -256,7 +255,6 @@ void OPCPreInit(void) {
   if (PinUsed(GPIO_OPC_CS) && (SPI_MOSI_MISO == TasmotaGlobal.spi_enabled)) {
     pinMode(Pin(GPIO_OPC_CS), OUTPUT);
     digitalWrite(Pin(GPIO_OPC_CS), 1);
-    OPC.config.news = false;
     OPC.setmode = 0x10;
     OPC.mode    = 0;
     //OPCReadTarget[OPC_READ_INFO]   = &OPC.msg.info;
@@ -342,7 +340,20 @@ static void OPCProcessMeasurements(void) {
     } else if ((1U << active) == OPC_TYPE_N3) {
       auto *n3 = static_cast<hist_n3data_t *>(hist_ptr);
 
-      // PM values
+    
+      uint8_t period_int;
+      if (OPC.status.gain == 3 || OPC.status.gain == 2) {
+        period_int = (uint8_t)((n3->period + 25U) / 50U);
+      } else {
+        period_int = (uint8_t)((n3->period + 50U) / 100U);
+      }
+      if (period_int != OPC.interval) {
+        return;
+      }
+      //AddLog(LOG_LEVEL_INFO, PSTR("OPC: OPC.data.period %f"), OPC.data.period);
+      //AddLog(LOG_LEVEL_INFO, PSTR("OPC: OPC.interval %u"), OPC.interval);
+      OPC.data.period = n3->period * 0.01f; 
+
       OPC.data.pm.a = n3->pm_a;
       OPC.data.pm.b = n3->pm_b;
       OPC.data.pm.c = n3->pm_c;
@@ -354,19 +365,19 @@ static void OPCProcessMeasurements(void) {
         OPC.data.flow = 0.0f;
       } else {
         OPC.data.concstr[0] = '\0';
-        const float norm = 1.0f / (n3->period * n3->flow * 0.01f);
+        const float norm = 10000.0f / ((uint32_t)n3->period * n3->flow);
         for (uint8_t i = 0; i < 24; ++i) {
           const float conc = n3->bins[i] * norm;
           char        tmp[16];
-          dtostrfd(conc, 3, tmp);
+          dtostrfd(conc, 2, tmp);
           strlcat(OPC.data.concstr, tmp, sizeof(OPC.data.concstr));
           if (i < 23) strlcat(OPC.data.concstr, PSTR(","), sizeof(OPC.data.concstr));
         }
         OPC.data.flow = n3->flow * 0.0006f;             // l/min
       }
 
-      // Environmental data
-      OPC.data.period = n3->period / 100.0f;            // s
+      // Environental data
+
 
       const uint32_t h_10 = ((uint32_t)n3->humi * 1000U) >> 16;
       const int32_t  t_10 = -450 + (((uint32_t)n3->temp * 1750U) >> 16);
@@ -384,9 +395,9 @@ static void OPCProcessMeasurements(void) {
 
 void OPCLoop(void) {
   if (PinUsed(GPIO_OPC_CS) && (SPI_MOSI_MISO == TasmotaGlobal.spi_enabled)) {
-    uint16_t diff = (OPC.setmode ^ (OPC.mode & 0xF0)); //ignore the lowest four bits, these are for the sensor types
+    uint16_t diff = (OPC.setmode ^ OPC.mode); //ignore the lowest four bits, these are for the sensor types
 
-    AddLog(LOG_LEVEL_INFO, PSTR("OPC: setmode=0x%03X, mode=0x%03X, diff=0x%03X"), 
+    DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: setmode=0x%03X, mode=0x%03X, diff=0x%03X"), 
            OPC.setmode, OPC.mode, diff);
 
     if (diff & OPC_OVERRIDE) {  
@@ -404,6 +415,7 @@ void OPCLoop(void) {
         FORMAT_PM_DIA(OPC.config.pm_dia_b, OPC.data.pm.dia_b);
         FORMAT_PM_DIA(OPC.config.pm_dia_c, OPC.data.pm.dia_c);
         MqttPublishSensor();
+        return;
       }
     }
     if (diff & OPC_STATUS) {
@@ -413,6 +425,7 @@ void OPCLoop(void) {
         OPCReadDataToStruct(OPC_READ_STATUS); // if boolean, then successful change mode.
         OPC.mode ^= OPC_STATUS; 
         MqttPublishSensor();
+        return;
       }
     }
 
@@ -458,7 +471,7 @@ void OPCLoop(void) {
         }
         return;
       }
-    // READ INTERVAL
+      // READ INTERVAL
       if (diff & OPC_PMHIST) {
         OPC.mode ^= OPC_PMHIST;
         if ((OPC.mode & OPC_PMHIST)) {
@@ -474,11 +487,11 @@ void OPCLoop(void) {
           //AddLog(LOG_LEVEL_INFO, PSTR("Read Hist: 0x%02X"), OPC.mode);
           OPCReadDataToStruct(OPC_READ_HIST);
         }  
+      } 
+      OPCProcessMeasurements(); 
+      if ((OPC.data.isFirst))  {
+        MqttPublishSensor();
       }
-    } 
-    OPCProcessMeasurements();
-    if ((OPC.data.isFirst))  {
-      MqttPublishSensor();
     }
   }
 }
@@ -757,7 +770,6 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
   } else {
 #ifdef USE_WEBSERVER
     WSContentSend_P(PSTR("{s}%s Mode{m}0x%02X{e}"), D_CMND_OPC, OPC.mode);
-    WSContentSend_P(PSTR("{s}%s Gain{m}%u{e}"), D_CMND_OPC, OPC.status.gain);
 #endif
   }
   DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC.data.isFirst= %d"), OPC.data.isFirst);
@@ -778,94 +790,11 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
       }
       return;
   }
-      // Zurücksetzen, damit die Config nicht bei jeder Show erscheint
-      //OPC.config.news = false;
   
   char types[11];
   strlcpy(types, OPC.types, sizeof(types));
 
-  //float pm1 = 0.0f;
-  //float pm2_5 = 0.0f;
-  //float pm10 = 0.0f;
 
-/*   char conc_str_array[200] = {0};
-  uint32_t active = (__builtin_ctz(OPC.mode & 0x0F));  // OPC-Typ
-  //AddLog(LOG_LEVEL_INFO, PSTR("OPC: mode %u"), OPC.mode);
-  void *hist_ptr = *OPC_AllocTable[active].ptr;  // Lookup-Tabelle
-  if ((OPC.mode & OPC_PMHIST) && hist_ptr && OPC.data.available) {
-    OPC.data.available = false;
-    if ((1 << active) == OPC_TYPE_N2) {
-      hist_n2data_t *n2 = (hist_n2data_t *)hist_ptr;
-      OPC.data.pm.a   = n2->pm_a;
-      OPC.data.pm.b = n2->pm_b;
-      OPC.data.pm.c  = n2->pm_c;
-      AddLog(LOG_LEVEL_INFO, PSTR("N2: PM1=%f, PM2.5=%f, PM10=%f"), 
-      n2->pm_a, n2->pm_b, n2->pm_c);
-    } else if ((1 << active) == OPC_TYPE_N3) {
-      hist_n3data_t *n3 = (hist_n3data_t *)hist_ptr;
-      OPC.data.pm.a  = n3->pm_a;
-      OPC.data.pm.b  = n3->pm_b;
-      OPC.data.pm.c  = n3->pm_c;
-
-      if (n3->flow == 0 || n3->period == 0 || (0 == memcmp(n3->bins, binsZero, sizeof(n3->bins)))) {
-        strlcpy(OPC.data.concstr, kBinsZeroString, sizeof(OPC.data.concstr));
-        OPC.data.flow = 0.0;
-      } else {
-        char conc_str_array[200] = {0};
-        float norm = 1.0f / (n3->period * n3->flow * 0.01f);
-        for (int i = 0; i < 24; i++) {
-          float conc = n3->bins[i] * norm;
-          char tmp[16];
-          dtostrfd(conc, 2, tmp);
-          strlcat(conc_str_array, tmp, sizeof(conc_str_array));
-          if (i < 23) strlcat(conc_str_array, PSTR(","), sizeof(conc_str_array));
-        }
-        strlcpy(OPC.data.concstr, conc_str_array, sizeof(OPC.data.concstr));
-        OPC.data.flow = n3->flow * 0.0006f;
-      }
-      OPC.data.period = n3->period / 100.0f;
-      uint32_t h_10 = ((uint32_t)n3->humi * 1000U) >> 16;
-      int32_t t_10 = -450 + (((uint32_t)n3->temp * 1750U) >> 16);
-      OPC.data.humi = ConvertHumidity(h_10 / 10.0f);
-      OPC.data.temp = ConvertTemp(t_10 / 10.0f);
-      OPC.data.abs_humi = CalcTempHumToAbsHum(OPC.data.temp, OPC.data.humi); */
-      //AddLog(LOG_LEVEL_INFO, PSTR("N3: PM1=%f, PM2.5=%f, PM10=%f, Temp=%f, Humi=%f, Flow rate=%f, Period=%f"), 
-      //        n3->pm_a, n3->pm_b, n3->pm_c, OPC.data.temp, OPC.data.humi, OPC.data.flow, OPC.data.period);
-      /*       
-      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin boundaries (ADC):"));
-      for (int i = 0; i < 25; i++) {
-        AddLog(LOG_LEVEL_INFO, PSTR("  ADC[%02d] = %u"), i, OPC.config.bin_boundaries_adc[i]);
-      }
-
-      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin boundaries (um * 100):"));
-      for (int i = 0; i < 25; i++) {
-        AddLog(LOG_LEVEL_INFO, PSTR("  UM100[%02d] = %u"), i, OPC.config.bin_boundaries_um100[i]);
-      }
-
-      AddLog(LOG_LEVEL_INFO, PSTR("OPC: Bin weightings:"));
-      for (int i = 0; i < 24; i++) {
-        AddLog(LOG_LEVEL_INFO, PSTR("  Weight[%02d] = %u"), i, OPC.config.bin_weightings[i]);
-      } */
-    
-
-
-
-      //for (int i = 0; i < 24; i++) {
-      //  AddLog(LOG_LEVEL_INFO, PSTR("Bin[%02d] = %u"), i, n3->bins[i]);
-      //}
-/*       DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR(
-        "mtof_a=%u, mtof_c=%u, mtof_e=%u, mtof_g=%u, "
-        "period=%f, flow=%f, temp=%f, humi=%f, "
-        "pm_a=%f, pm_b=%f, pm_c=%f, "
-        "rej_cnt_gli=%u, rej_cnt_lon=%u, rej_cnt_rat=%u, rej_cnt_oor=%u, "
-        "fan_rev_cnt=%u, las_status=%u"
-      ),
-        n3->mtof_a, n3->mtof_c, n3->mtof_e, n3->mtof_g,
-        OPC.data.period, OPC.data.flow, OPC.data.temp, OPC.data.humi,
-        n3->pm_a, n3->pm_b, n3->pm_c,
-        n3->rej_cnt_gli, n3->rej_cnt_lon, n3->rej_cnt_rat, n3->rej_cnt_oor,
-        n3->fan_rev_cnt, n3->las_status
-      ); */
     
   if (json) {
     ResponseAppend_P(PSTR(",\"Gain\":%u"), OPC.status.gain);
@@ -884,13 +813,14 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     ResponseJsonEnd();
 #ifdef USE_WEBSERVER
   } else {
+    WSContentSend_P(PSTR("{s}%s Gain{m}%u{e}"), D_CMND_OPC, OPC.status.gain);
     WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_a, &OPC.data.pm.a);
     WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_b, &OPC.data.pm.b);
     WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_c, &OPC.data.pm.c);
 
     if ((OPC.mode & OPC_PMHIST) && ((1U << __builtin_ctz(OPC.mode & 0x0F)) == OPC_TYPE_N3)) {
       WSContentSend_PD(PSTR("{s}%s " D_FLOW_RATE "{m}%3_f " D_UNIT_LITER_PER_MINUTE "{e}"), D_CMND_OPC, &OPC.data.flow);
-      WSContentSend_PD(PSTR("{s}%s " D_JSON_PERIOD "{m}%3_f " D_UNIT_SECOND "{e}"),            D_CMND_OPC, &OPC.data.period);
+      WSContentSend_PD(PSTR("{s}%s " D_JSON_PERIOD "{m}%2_f " D_UNIT_SECOND "{e}"),            D_CMND_OPC, &OPC.data.period);
       WSContentSend_THD(D_CMND_OPC, OPC.data.temp, OPC.data.humi);
       WSContentSend_PD(HTTP_SNS_F_ABS_HUM, D_CMND_OPC, 4, &OPC.data.abs_humi);
     }
