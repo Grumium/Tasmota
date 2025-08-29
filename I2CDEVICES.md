@@ -132,5 +132,6 @@ Index | Define              | Driver   | Device   | Address(es) | Bus2 | Descrip
   92  | USE_PCF85063        | xdrv_56  | PCF85063  | 0x51       |      | PCF85063 Real time clock
   93  | USE_AS33772S        | xdrv_119 | AS33772S  | 0x52       | Yes  | AS33772S USB PD Sink Controller
   94  | USE_RV3028          | xdrv_56  | RV3028    | 0x52       | Yes  | RV-3028-C7 RTC Controller
+  95  | USE_BMV080          | xsns_125 |           | 0x54       | Yes  | BMV080
 
   NOTE: Bus2 supported on ESP32 only.

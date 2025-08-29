@@ -31,6 +31,17 @@
 #define XSNS_123 123
 //#define XI2C_76 76 // See I2CDEVICES.md
 
+#define D_PRFX_SEN66 "Sen66"
+#define D_CMND_TEMP_OFFSET "TempOffset"
+
+const char kSen66Commands[] PROGMEM = D_PRFX_SEN66 "|" D_CMND_TEMP_OFFSET ;
+
+void CmndSen66TempOffset(void); 
+
+void (* const Sen66Command[])(void) PROGMEM = {
+  &CmndSen66TempOffset
+};
+
 typedef enum {
   START_CONTINUOUS_MEASUREMENT = 0x21,
   STOP_MEASUREMENT = 0x104,
@@ -68,6 +79,7 @@ typedef enum {
 #include <SensirionI2cSen66.h>
 #include <Wire.h>
 SensirionI2cSen66 *sen66 = nullptr;
+static bool g_sen66_valid = false;
 
 struct SEN66DATA_s {
   uint16_t numberConcentrationPm0p5;
@@ -84,6 +96,7 @@ struct SEN66DATA_s {
   int16_t vocIndex;
   int16_t noxIndex;
   uint16_t co2;
+  float temp_offset = 0.0f;
 } *SEN66DATA = nullptr;
 
 /********************************************************************************************/
@@ -138,7 +151,20 @@ void sen66_Init(void) {
   }
 
   SEN66DATA = (SEN66DATA_s *)calloc(1, sizeof(struct SEN66DATA_s));
+  g_sen66_valid = false;  
   I2cSetActiveFound(SEN66_ADDRESS, "SEN66", usingI2cBus);
+}
+
+void CmndSen66TempOffset(void) {
+  if (SEN66DATA) {
+    if (XdrvMailbox.data_len) {
+      float val = CharToFloat(XdrvMailbox.data);
+      if (val > -20.0f && val < 20.0f) {
+        SEN66DATA->temp_offset = val;
+      }
+    }
+    ResponseCmndFloat(SEN66DATA->temp_offset, 2);
+  }
 }
 
 void SEN66Update(void) {  // Perform every second to ensure proper operation of the baseline compensation algorithm
@@ -158,22 +184,31 @@ void SEN66Update(void) {  // Perform every second to ensure proper operation of 
       SEN66DATA->noxIndex, SEN66DATA->co2);
 
   if (error) {
-    AddLog(LOG_LEVEL_DEBUG, PSTR("S66: Failed to retrieve readings"));
+    AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Failed to retrieve readings"));
 #ifdef DEBUG_TASMOTA_SENSOR
     DEBUG_SENSOR_LOG(PSTR("Error trying to execute readMeasuredValues():"));
     errorToString(error, errorMessage, 256);
     DEBUG_SENSOR_LOG(errorMessage);
 #endif
+    g_sen66_valid = false; 
+    return;
   }
+
+  g_sen66_valid = true;                  // NEU: Daten gültig
 }
 
 void SEN66Show(bool json) {
+  if (!g_sen66_valid) {                  // NEU: Bei Fehler nichts anzeigen/anhängen
+    return;
+  }
   char types[10];
   strcpy_P(types, PSTR("SEN66"));
 
   float temperature = NAN;
   float humidity = NAN;
   float abs_humidity = NAN;
+  float temp_raw = NAN;
+  float dew = NAN;
   float npm0_5 = SEN66DATA->numberConcentrationPm0p5/10.0f;
   float npm1 = (SEN66DATA->numberConcentrationPm1p0 - SEN66DATA->numberConcentrationPm0p5)/10.0f;
   float npm2_5 = (SEN66DATA->numberConcentrationPm2p5 - SEN66DATA->numberConcentrationPm1p0)/10.0f;
@@ -185,12 +220,18 @@ void SEN66Show(bool json) {
   float pm10 = SEN66DATA->massConcentrationPm10p0/10.0f;
   int voc = SEN66DATA->vocIndex / 10;
   int nox = SEN66DATA->noxIndex / 10;
+  char str_humidity[33];
+  char str_dewpoint[33];
   //AddLog(LOG_LEVEL_INFO, PSTR("voc %f"), voc);
   bool ahum_available = (!isnan(SEN66DATA->ambientTemperature) && !isnan(SEN66DATA->ambientHumidity) && (SEN66DATA->ambientHumidity > 0));
   if (ahum_available) {
-    temperature = ConvertTemp(SEN66DATA->ambientTemperature/200.0f);
+    temp_raw = (SEN66DATA->ambientTemperature / 200.0f);
+    temperature = ConvertTemp(temp_raw + SEN66DATA->temp_offset);
     humidity = ConvertHumidity(SEN66DATA->ambientHumidity/100.0f);
-    abs_humidity = CalcTempHumToAbsHum(temperature, humidity);
+    dew =      CalcTempHumToDew(temp_raw,humidity);
+    abs_humidity = CalcTempHumToAbsHum(temp_raw, humidity);
+    dtostrfd(humidity, Settings->flag2.humidity_resolution, str_humidity);
+    dtostrfd(dew, Settings->flag2.temperature_resolution, str_dewpoint);
   }
 
   if (json) {
@@ -209,7 +250,9 @@ void SEN66Show(bool json) {
       ResponseAppend_P(PSTR("\"VOC\":%d,"), voc);
     }
     if (ahum_available) {
-      ResponseAppendTHD(temperature, humidity);
+      ResponseAppend_P(PSTR("\"" D_JSON_TEMPERATURE "\":%2_f"), &temperature);
+      ResponseAppend_P(PSTR(",\"" D_JSON_HUMIDITY "\":%1_f"), &humidity);
+      ResponseAppend_P(PSTR(",\"" D_JSON_DEWPOINT "\":%2_f"), &dew);
       ResponseAppend_P(PSTR(",\"" D_JSON_AHUM "\":%4_f"), &abs_humidity);
     }
     ResponseJsonEnd();
@@ -234,7 +277,9 @@ void SEN66Show(bool json) {
       WSContentSend_PD(HTTP_SNS_VOC, types, voc);
     }
     if (ahum_available) {
-      WSContentSend_THD(types, temperature, humidity);
+      WSContentSend_Temp(types, temperature);
+      WSContentSend_PD(HTTP_SNS_HUM, types, str_humidity);
+      WSContentSend_PD(HTTP_SNS_DEW, types, str_dewpoint, TempUnit());
       WSContentSend_PD(HTTP_SNS_F_ABS_HUM, types, 4, &abs_humidity);
     }
 #endif
@@ -273,6 +318,9 @@ bool Xsns123(uint32_t function) {
       SEN66Show(0);
       break;
 #endif // USE_WEBSERVER
+    case FUNC_COMMAND:
+      result = DecodeCommand(kSen66Commands, Sen66Command);
+      break;
     }
   }
   return result;

@@ -46,12 +46,13 @@
 #define D_PRFX_BH1750 "Bh1750"
 #define D_CMND_RESOLUTION "Resolution"
 #define D_CMND_MTREG "MTime"
+#define D_CMND_CALIBFACTOR "CalibFactor"
 
 const char kBh1750Commands[] PROGMEM = D_PRFX_BH1750 "|"  // Prefix
-  D_CMND_RESOLUTION "|" D_CMND_MTREG ;
+  D_CMND_RESOLUTION "|" D_CMND_MTREG  "|" D_CMND_CALIBFACTOR ;;
 
 void (* const Bh1750Command[])(void) PROGMEM = {
-  &CmndBh1750Resolution, &CmndBh1750MTime };
+  &CmndBh1750Resolution, &CmndBh1750MTime, &CmndBh1750Factor };
 
 struct {
   uint8_t addresses[2] = { BH1750_ADDR1, BH1750_ADDR2 };
@@ -65,6 +66,7 @@ struct {
   uint8_t bus;
   uint8_t valid = 0;
   uint8_t mtreg = 69;                          // Default Measurement Time
+  float   factor = 1.0f;  
   uint16_t illuminance = 0;
 } Bh1750_sensors[2];
 
@@ -125,7 +127,7 @@ bool Bh1750Read(uint32_t sensor_index) {
     return false;
   }
   float illuminance = (data[0] << 8) | data[1];
-  illuminance *= 57.5 / (float)Bh1750_sensors[sensor_index].mtreg;  // Fix #16022
+  illuminance *= 57.5 / (float)Bh1750_sensors[sensor_index].mtreg * (float)Bh1750_sensors[sensor_index].factor;  // Fix #16022
   if (1 == Bh1750Resolution(sensor_index)) {
     illuminance /= 2;
   }
@@ -187,6 +189,18 @@ void CmndBh1750MTime(void) {
       Bh1750SetMTreg(XdrvMailbox.index -1);
     }
     ResponseCmndIdxNumber(Bh1750_sensors[XdrvMailbox.index -1].mtreg);
+  }
+}
+
+void CmndBh1750Factor(void) {
+  if ((XdrvMailbox.index > 0) && (XdrvMailbox.index <= Bh1750.count)) {
+    if (XdrvMailbox.data_len) {
+      float val = CharToFloat(XdrvMailbox.data);
+      if (val > 0.0f && val < 10.0f) {             // Limit to 0 .. 10
+        Bh1750_sensors[XdrvMailbox.index -1].factor = val;
+      }
+    }
+    ResponseCmndIdxFloat(Bh1750_sensors[XdrvMailbox.index -1].factor, 2);
   }
 }
 

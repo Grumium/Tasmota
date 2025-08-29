@@ -57,3 +57,7 @@ lib/libesp32/berry/berry
 ## Python virtual environments for Platformio ##
 venv
 .venv
+lib/lib_i2c/BMV080/src/esp32/lib_bmv080.a
+lib/lib_i2c/BMV080/src/esp32/lib_postProcessor.a
+lib/lib_i2c/BMV080/src/sfTk/bmv080.h
+lib/lib_i2c/BMV080/src/sfTk/bmv080_defs.h

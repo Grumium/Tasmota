@@ -141,15 +141,15 @@ void* OPCReadTarget[sizeof(OPCCommand) / sizeof(OPCCommand[0])];
 
 #ifdef USE_WEBSERVER
 #define WEB_HANDLE_OPC "s124"
-const char HTTP_BTN_OPC[] PROGMEM = 
-"<p>"
-"<button onclick='sendOPCCommand()'>Toggle " D_CMND_OPC "</button>"
-"</p>"
-"<script>"
-"function sendOPCCommand() {"
-"  fetch('" WEB_HANDLE_OPC "', { method: 'POST' });"
-"}"
-"</script>";
+//const char HTTP_BTN_OPC[] PROGMEM = 
+//"<p>"
+//"<button onclick='sendOPCCommand()'>Toggle " D_CMND_OPC "</button>"
+//"</p>"
+//"<script>"
+//"function sendOPCCommand() {"
+//"  fetch('" WEB_HANDLE_OPC "', { method: 'POST' });"
+//"}"
+//"</script>";
 #endif // USE_WEBSERVER
 
 #define OPC_SLOW_INTERVAL 4
@@ -851,9 +851,9 @@ bool Xsns124(uint32_t function) {
       case FUNC_WEB_SENSOR:
         OPCShow(0);
         break;
-      case FUNC_WEB_ADD_MAIN_BUTTON:
-        WSContentSend_P(HTTP_BTN_OPC);
-        break;
+      //case FUNC_WEB_ADD_MAIN_BUTTON:
+      //  WSContentSend_P(HTTP_BTN_OPC);
+      //  break;
       case FUNC_WEB_ADD_HANDLER:
         WebServer_on(PSTR("/" WEB_HANDLE_OPC), HandleOPCAction);
         break;

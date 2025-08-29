@@ -190,6 +190,30 @@ char *fileOnly(char *fname){
 
 #ifdef USE_SDCARD
 void UfsCheckSDCardInit(void) {
+
+#ifdef ESP32
+  int8_t spi_pins[] = {Pin(GPIO_SPI_CLK), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_MOSI)};
+  
+  for (int i = 0; i < 3; i++) {
+    int8_t gpio = spi_pins[i];
+    
+    if (gpio >= 0 && gpio < GPIO_NUM_MAX) {
+      gpio_config_t io_conf = {};
+      io_conf.intr_type = GPIO_INTR_DISABLE;
+      io_conf.mode = GPIO_MODE_INPUT_OUTPUT;
+      io_conf.pin_bit_mask = (1ULL << (uint8_t)gpio);
+      io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+      io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+      
+      gpio_config(&io_conf);
+      
+      // Set drive strength to maximum for better signal integrity
+      gpio_set_drive_capability((gpio_num_t)gpio, GPIO_DRIVE_CAP_3);
+      
+      AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_UFS "Enhanced drive capability on GPIO%d."), gpio);
+    }
+  }
+#endif // ESP32
   // Try SPI mode first
   // SPI mode requires SDCARD_CS to be configured
   if (TasmotaGlobal.spi_enabled && PinUsed(GPIO_SDCARD_CS)) {

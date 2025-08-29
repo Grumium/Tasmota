@@ -1557,7 +1557,7 @@ set_popovers|bool||[lv_keyboard_set_popovers](https://docs.lvgl.io/9.0/search.ht
 set_textarea|lv.obj||[lv_keyboard_set_textarea](https://docs.lvgl.io/9.0/search.html?q=lv_keyboard_set_textarea)
 
 ### widget `lv.tabview`
-
+2
 Method|Arguments|Return type|LVGL equivalent
 :---|:---|:---|:---
 add_tab|string|lv.obj|[lv_tabview_add_tab](https://docs.lvgl.io/9.0/search.html?q=lv_tabview_add_tab)
