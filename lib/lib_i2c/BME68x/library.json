@@ -1,0 +1,42 @@
+{
+  "name": "BME68x",
+  "version": "1.0.0",
+  "description": "Sensor driver for BME68x sensor",
+  "keywords": "BME680, BME688, sensor, bosch",
+  "authors": [
+    {
+      "name": "Bosch Sensortec GmbH"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BoschSensortec/BME68x-Sensor-API.git"
+  },
+  "build": {
+    "srcDir": ".",
+    "srcFilter": [
+      "+<bme68x.c>",
+      "+<bme68x.h>",
+      "+<bme68x_defs.h>",
+      "+<src/bsec.cpp>",
+      "+<src/bsec.h>",
+      "+<src/bsec_interface.c>",
+      "+<src/inc/bsec_datatypes.h>",
+      "+<src/inc/bsec_interface.h>"
+    ],
+    "flags": [
+      "-Isrc/inc"
+    ],
+    "libArchive": false
+  },
+  "export": {
+    "build": {
+      "flags": [
+        "-Llib/lib_i2c/BME68x/src/esp32",
+        "-lalgobsec"
+      ]
+    }
+  },
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif8266", "espressif32"]
+}

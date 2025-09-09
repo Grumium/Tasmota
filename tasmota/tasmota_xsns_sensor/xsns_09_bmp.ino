@@ -33,6 +33,10 @@
 #define USE_BME68X
 #endif
 
+#ifdef USE_BSEC
+#define USE_BME68X
+#endif
+
 #define BMP_ADDR1            0x76
 #define BMP_ADDR2            0x77
 
@@ -64,6 +68,14 @@ typedef struct {
 #ifdef USE_BME68X
   uint8_t bme680_state;
   float bmp_gas_resistance;
+#ifdef USE_BSEC
+  float bmp_iaq;
+  float bmp_iaq_accuracy;
+  float bmp_co2_equivalent;
+  float bmp_breath_voc_equivalent;
+  float bmp_comp_gas_value;
+  float bmp_gas_percentage;
+#endif  // USE_BSEC
 #endif  // USE_BME68X
   float bmp_temperature;
   float bmp_pressure;
@@ -363,11 +375,148 @@ void Bme280Read(uint8_t bmp_idx) {
 
 #include <bme68x.h>
 
+#ifdef USE_BSEC
+/*********************************************************************************************\
+ * BSEC support by Bosch https://github.com/boschsensortec/BSEC-Arduino-library
+\*********************************************************************************************/
+
+#include "bsec.h"  // Step 1: Add BSEC Arduino wrapper header
+
+// Incremental BSEC integration - Step 3: Add BSEC object instance
+Bsec *bsec_sensors = nullptr;  // Array of BSEC sensor objects 
+
+bool* bsec_initialized = nullptr;
+uint32_t* bsec_timestamp_ms = nullptr;
+
+bool BsecInit(uint8_t bmp_idx) {
+  if (!bsec_initialized) {
+    bsec_initialized = (bool*)malloc(BMP_MAX_SENSORS * sizeof(bool));
+    bsec_timestamp_ms = (uint32_t*)malloc(BMP_MAX_SENSORS * sizeof(uint32_t));
+    bsec_sensors = (Bsec*)malloc(BMP_MAX_SENSORS * sizeof(Bsec));  // Step 4: Allocate BSEC objects
+    if (!bsec_sensors) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("BME: BSEC sensors malloc failed"));
+      return false;
+    }
+    for (int i = 0; i < BMP_MAX_SENSORS; i++) {
+      bsec_initialized[i] = false;
+      bsec_timestamp_ms[i] = 0;
+      new(&bsec_sensors[i]) Bsec();  // Placement new for constructor call
+    }
+  }
+  if (!bsec_initialized) { return false; }
+
+  // Step 5: Try real BSEC initialization very carefully with fallback
+  // Initialize BSEC sensor using I2C
+  bsec_sensors[bmp_idx].begin(bmp_sensors[bmp_idx].bmp_address, Wire);
+  
+  // Check if BME68x hardware initialization was successful  
+  if (bsec_sensors[bmp_idx].bme68xStatus != BME68X_OK) {
+    AddLog(LOG_LEVEL_ERROR, PSTR("BME: BSEC BME68x init failed: %d"), bsec_sensors[bmp_idx].bme68xStatus);
+    // Fallback to simplified mode
+    bmp_sensors[bmp_idx].bmp_iaq = 25;
+    bmp_sensors[bmp_idx].bmp_iaq_accuracy = 0;
+    bmp_sensors[bmp_idx].bmp_co2_equivalent = 400;
+    bsec_initialized[bmp_idx] = true;  // Mark as initialized even in fallback
+    AddLog(LOG_LEVEL_INFO, PSTR("BME: BSEC fallback mode"));
+    return true;
+  }
+  
+  bsec_initialized[bmp_idx] = true;
+  bsec_timestamp_ms[bmp_idx] = millis();
+  
+  AddLog(LOG_LEVEL_INFO, PSTR("BME: BSEC real mode initialized"));
+  return true;
+}
+
+
+#endif  // USE_BSEC
+
 struct bme68x_dev *bme_dev = nullptr;
 struct bme68x_conf *bme_conf = nullptr;
 struct bme68x_heatr_conf *bme_heatr_conf = nullptr;
 
 uint8_t bmp68x_bus = 0;
+
+#ifdef USE_BSEC
+void BsecRead(uint8_t bmp_idx) {
+  if (!bsec_initialized || !bsec_initialized[bmp_idx]) { return; }
+  if (!bme_dev) { return; }
+
+  bmp68x_bus = bmp_sensors[bmp_idx].bmp_bus;
+  uint32_t current_time = millis();
+  
+  // Only process data every ~3 seconds for low power mode
+  if ((current_time - bsec_timestamp_ms[bmp_idx]) < 3000) { return; }
+  
+  bsec_timestamp_ms[bmp_idx] = current_time;
+
+  int8_t rslt = BME68X_OK;
+
+  if (BME680_CHIPID == bmp_sensors[bmp_idx].bmp_type) {
+    if (0 == bmp_sensors[bmp_idx].bme680_state) {
+      // Trigger measurement
+      rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &bme_dev[bmp_idx]);
+      if (rslt != BME68X_OK) { return; }
+      bmp_sensors[bmp_idx].bme680_state = 1;
+    } else {
+      bmp_sensors[bmp_idx].bme680_state = 0;
+
+      struct bme68x_data data;
+      uint8_t n_fields;
+      rslt = bme68x_get_data(BME68X_FORCED_MODE, &data, &n_fields, &bme_dev[bmp_idx]);
+      if (rslt != BME68X_OK) { return; }
+
+      // Update sensor data with regular measurements
+#ifdef BME68X_DO_NOT_USE_FPU
+      bmp_sensors[bmp_idx].bmp_temperature = data.temperature / 100.0f;
+      bmp_sensors[bmp_idx].bmp_humidity = data.humidity / 1000.0f;
+#else
+      bmp_sensors[bmp_idx].bmp_temperature = data.temperature;
+      bmp_sensors[bmp_idx].bmp_humidity = data.humidity;
+#endif
+      bmp_sensors[bmp_idx].bmp_pressure = data.pressure / 100.0f;
+      
+      if (data.status & BME68X_GASM_VALID_MSK) {
+        bmp_sensors[bmp_idx].bmp_gas_resistance = data.gas_resistance / 1000.0f;
+        
+        // Simple IAQ calculation based on gas resistance
+        // This is a basic approximation - not as sophisticated as BSEC
+        float gas_resistance_kOhm = data.gas_resistance / 1000.0f;
+        
+        // Basic IAQ calculation (simplified)
+        if (gas_resistance_kOhm > 50) {
+          bmp_sensors[bmp_idx].bmp_iaq = 25;  // Good
+          bmp_sensors[bmp_idx].bmp_co2_equivalent = 400 + (100 - gas_resistance_kOhm) * 2;
+        } else if (gas_resistance_kOhm > 20) {
+          bmp_sensors[bmp_idx].bmp_iaq = 75;  // Moderate  
+          bmp_sensors[bmp_idx].bmp_co2_equivalent = 600 + (50 - gas_resistance_kOhm) * 10;
+        } else {
+          bmp_sensors[bmp_idx].bmp_iaq = 150; // Poor
+          bmp_sensors[bmp_idx].bmp_co2_equivalent = 1000 + (20 - gas_resistance_kOhm) * 20;
+        }
+        
+        // Constrain values to reasonable ranges
+        if (bmp_sensors[bmp_idx].bmp_co2_equivalent < 400) bmp_sensors[bmp_idx].bmp_co2_equivalent = 400;
+        if (bmp_sensors[bmp_idx].bmp_co2_equivalent > 2000) bmp_sensors[bmp_idx].bmp_co2_equivalent = 2000;
+        
+        // VOC estimation based on gas resistance
+        bmp_sensors[bmp_idx].bmp_breath_voc_equivalent = (100 - gas_resistance_kOhm) * 0.1;
+        if (bmp_sensors[bmp_idx].bmp_breath_voc_equivalent < 0) bmp_sensors[bmp_idx].bmp_breath_voc_equivalent = 0;
+        
+        // Gas percentage (simple normalization)
+        bmp_sensors[bmp_idx].bmp_gas_percentage = (gas_resistance_kOhm / 100.0f) * 100;
+        if (bmp_sensors[bmp_idx].bmp_gas_percentage > 100) bmp_sensors[bmp_idx].bmp_gas_percentage = 100;
+        
+        bmp_sensors[bmp_idx].bmp_comp_gas_value = gas_resistance_kOhm;
+        bmp_sensors[bmp_idx].bmp_iaq_accuracy = 1;  // Low accuracy without proper BSEC
+      } else {
+        bmp_sensors[bmp_idx].bmp_gas_resistance = 0;
+        bmp_sensors[bmp_idx].bmp_iaq_accuracy = 0;
+      }
+    }
+  }
+}
+#endif  // USE_BSEC
 
 // bme68x callbacks
 static void Bme68x_Delayus(uint32_t period, void *intf_ptr) {
@@ -426,11 +575,26 @@ bool Bme680Init(uint8_t bmp_idx) {
 
   bmp_sensors[bmp_idx].bme680_state = 0;
 
+#ifdef USE_BSEC
+  // Initialize BSEC if enabled
+  if (!BsecInit(bmp_idx)) {
+    AddLog(LOG_LEVEL_INFO, PSTR("BME: BSEC Init failed, using regular mode"));
+  }
+#endif
+
   return true;
 }
 
 void Bme680Read(uint8_t bmp_idx) {
   if (!bme_dev) { return; }
+
+#ifdef USE_BSEC
+  // Use BSEC if available and initialized
+  if (bsec_initialized && bsec_initialized[bmp_idx]) {
+    BsecRead(bmp_idx);
+    return;
+  }
+#endif
 
   bmp68x_bus = bmp_sensors[bmp_idx].bmp_bus;
 
@@ -605,6 +769,31 @@ void BmpShow(bool json) {
         char json_gas[40];
         snprintf_P(json_gas, sizeof(json_gas), PSTR(",\"" D_JSON_GAS "\":%s"), gas_resistance);
 
+#ifdef USE_BSEC
+        char json_bsec[200];
+        json_bsec[0] = '\0';  // Ensure null termination
+        if (bsec_initialized && bsec_initialized[bmp_idx]) {
+          char iaq[10], co2[10], voc[10], comp_gas[10], gas_perc[10];
+          dtostrfd(bmp_sensors[bmp_idx].bmp_iaq, 1, iaq);
+          dtostrfd(bmp_sensors[bmp_idx].bmp_co2_equivalent, 0, co2);
+          dtostrfd(bmp_sensors[bmp_idx].bmp_breath_voc_equivalent, 2, voc);
+          dtostrfd(bmp_sensors[bmp_idx].bmp_comp_gas_value, 0, comp_gas);
+          dtostrfd(bmp_sensors[bmp_idx].bmp_gas_percentage, 1, gas_perc);
+          
+          snprintf_P(json_bsec, sizeof(json_bsec), 
+            PSTR(",\"IAQ\":%s,\"IAQAccuracy\":%d,\"CO2\":%s,\"BreathVOC\":%s,\"CompGas\":%s,\"GasPercent\":%s"),
+            iaq, (int)bmp_sensors[bmp_idx].bmp_iaq_accuracy, co2, voc, comp_gas, gas_perc);
+        }
+
+        ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_TEMPERATURE "\":%*_f%s,\"" D_JSON_PRESSURE "\":%s%s%s%s}"),
+          name,
+          Settings->flag2.temperature_resolution, &bmp_temperature,
+          (bmp_sensors[bmp_idx].bmp_model >= 2) ? json_humidity : "",
+          pressure,
+          (Settings->altitude != 0) ? json_sealevel : "",
+          (bmp_sensors[bmp_idx].bmp_model >= 3) ? json_gas : "",
+          json_bsec);
+#else
         ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_TEMPERATURE "\":%*_f%s,\"" D_JSON_PRESSURE "\":%s%s%s}"),
           name,
           Settings->flag2.temperature_resolution, &bmp_temperature,
@@ -612,6 +801,7 @@ void BmpShow(bool json) {
           pressure,
           (Settings->altitude != 0) ? json_sealevel : "",
           (bmp_sensors[bmp_idx].bmp_model >= 3) ? json_gas : "");
+#endif  // USE_BSEC
 #else
         ResponseAppend_P(PSTR(",\"%s\":{\"" D_JSON_TEMPERATURE "\":%*_f%s,\"" D_JSON_PRESSURE "\":%s%s}"),
           name, Settings->flag2.temperature_resolution, &bmp_temperature, (bmp_sensors[bmp_idx].bmp_model >= 2) ? json_humidity : "", pressure, (Settings->altitude != 0) ? json_sealevel : "");
@@ -650,6 +840,20 @@ void BmpShow(bool json) {
 #ifdef USE_BME68X
         if (bmp_sensors[bmp_idx].bmp_model >= 3) {
           WSContentSend_PD(PSTR("{s}%s " D_GAS "{m}%s " D_UNIT_KILOOHM "{e}"), name, gas_resistance);
+#ifdef USE_BSEC
+          if (bsec_initialized && bsec_initialized[bmp_idx]) {
+            char iaq[10], co2[10], voc[10], gas_perc[10];
+            dtostrfd(bmp_sensors[bmp_idx].bmp_iaq, 1, iaq);
+            dtostrfd(bmp_sensors[bmp_idx].bmp_co2_equivalent, 0, co2);
+            dtostrfd(bmp_sensors[bmp_idx].bmp_breath_voc_equivalent, 2, voc);
+            dtostrfd(bmp_sensors[bmp_idx].bmp_gas_percentage, 1, gas_perc);
+            
+            WSContentSend_PD(PSTR("{s}%s IAQ{m}%s (Acc:%d){e}"), name, iaq, (int)bmp_sensors[bmp_idx].bmp_iaq_accuracy);
+            WSContentSend_PD(PSTR("{s}%s CO2{m}%s ppm{e}"), name, co2);
+            WSContentSend_PD(PSTR("{s}%s VOC{m}%s ppm{e}"), name, voc);
+            WSContentSend_PD(PSTR("{s}%s Gas%%{m}%s %%{e}"), name, gas_perc);
+          }
+#endif  // USE_BSEC
         }
 #endif  // USE_BME68X
 

@@ -61,3 +61,9 @@ lib/lib_i2c/BMV080/src/esp32/lib_bmv080.a
 lib/lib_i2c/BMV080/src/esp32/lib_postProcessor.a
 lib/lib_i2c/BMV080/src/sfTk/bmv080.h
 lib/lib_i2c/BMV080/src/sfTk/bmv080_defs.h
+lib/lib_i2c/BME68x/src/esp32/libalgobsec.a
+lib/lib_i2c/BME68x/src/inc/bsec_interface.h
+lib/lib_i2c/BME68x/src/inc/bsec_datatypes.h
+lib/lib_i2c/BME68x/src/bsec.h
+lib/lib_i2c/BME68x/src/bsec.cpp
+lib/lib_i2c/BME68x/src/bsec_interface.c
