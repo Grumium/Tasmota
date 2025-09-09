@@ -18,6 +18,9 @@
 */
 
 #ifdef USE_I2C
+#ifdef USE_SEN5X
+  #undef USE_SEN5X
+#endif
 #ifdef USE_SEN66
 /*********************************************************************************************\
  * SEN66 - Gas (VOC - Volatile Organic Compounds / NOx - Nitrous Oxides) and Particulates (PM)
@@ -29,17 +32,25 @@
 \*********************************************************************************************/
 
 #define XSNS_123 123
-//#define XI2C_76 76 // See I2CDEVICES.md
+#define XI2C_76 76 // See I2CDEVICES.md
+
+#define SEN66_CO2_INVALID 0xFFFF  // Invalid CO2 value during calibration
 
 #define D_PRFX_SEN66 "Sen66"
 #define D_CMND_TEMP_OFFSET "TempOffset"
+#define D_CMND_HUMIDITY_OFFSET "HumidityOffset"
+#define D_CMND_CO2_CALIBRATE "CO2Calibrate"
+#define D_CMND_CO2_AUTOCAL "CO2AutoCal"
 
-const char kSen66Commands[] PROGMEM = D_PRFX_SEN66 "|" D_CMND_TEMP_OFFSET ;
+const char kSen66Commands[] PROGMEM = D_PRFX_SEN66 "|" D_CMND_TEMP_OFFSET "|" D_CMND_HUMIDITY_OFFSET "|" D_CMND_CO2_CALIBRATE "|" D_CMND_CO2_AUTOCAL ;
 
 void CmndSen66TempOffset(void); 
+void CmndSen66HumidityOffset(void); 
+void CmndSen66CO2Calibrate(void);
+void CmndSen66CO2AutoCal(void);
 
 void (* const Sen66Command[])(void) PROGMEM = {
-  &CmndSen66TempOffset
+  &CmndSen66TempOffset, &CmndSen66HumidityOffset, &CmndSen66CO2Calibrate, &CmndSen66CO2AutoCal
 };
 
 typedef enum {
@@ -97,7 +108,38 @@ struct SEN66DATA_s {
   int16_t noxIndex;
   uint16_t co2;
   float temp_offset = 0.0f;
+  int8_t humidity_offset = 0;
+  float rh_temp_correction = 0.0f;
+  bool calibrating = false;
+  uint32_t calibration_end_time = 0;  // millis() when calibration should end
+  bool post_calibration_validation = false;  // validate readings after calibration
+  uint32_t co2_suppress_until = 0;  // millis() when to stop suppressing CO2 in JSON
+  uint32_t co2_suppress_min_until = 0;  // minimum time CO2 suppression must remain active
+  bool co2_suppress_active = false;  // actively suppressing CO2 publication
 } *SEN66DATA = nullptr;
+
+// Efficient saturation vapor pressure calculation using polynomial approximation
+// error negligible compared to Magnus-Tetens
+float es_approx(float T_c) {
+  float T = T_c;
+  float T2 = T * T;
+  float T3 = T2 * T;
+  return 5.60658f + 0.64705f * T_c - 0.00326f * T2 + 0.00074f * T3;
+}
+
+// Corrected relative humidity calculation
+float rh_corrected(float RH_meas, float T_meas_C, float deltaT_correction) {
+  if (RH_meas <= 0.0f || deltaT_correction == 0.0f) return RH_meas;
+  
+  float T_true = T_meas_C + deltaT_correction;
+  float ratio = es_approx(T_meas_C) / es_approx(T_true);
+  float RH_corr = RH_meas * ratio;
+  
+  // Clamp to valid range
+  if (RH_corr < 0.0f) return 0.0f;
+  if (RH_corr > 100.0f) return 100.0f;
+  return RH_corr;
+}
 
 /********************************************************************************************/
 
@@ -167,7 +209,214 @@ void CmndSen66TempOffset(void) {
   }
 }
 
+void CmndSen66HumidityOffset(void) {
+  if (SEN66DATA) {
+    if (XdrvMailbox.data_len) {
+      int val = atoi(XdrvMailbox.data);
+      if (val >= -50 && val <= 50) {
+        SEN66DATA->humidity_offset = val;
+      }
+    }
+    ResponseCmndNumber(SEN66DATA->humidity_offset);
+  }
+}
+
+void CmndSen66CO2Calibrate(void) {
+  if (sen66 && SEN66DATA) {
+    uint16_t targetCo2 = 400;  // Default to 400 ppm
+    if (XdrvMailbox.data_len) {
+      targetCo2 = atoi(XdrvMailbox.data);
+      if (targetCo2 < 300 || targetCo2 > 2000) {
+        ResponseCmndChar("InvalidRange");
+        return;
+      }
+    }
+    
+    AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Starting CO2 calibration at %d ppm"), targetCo2);
+    
+    // Skip updates during calibration and validate first readings afterward
+    SEN66DATA->calibrating = true;
+    SEN66DATA->calibration_end_time = millis() + 2000;  // 2 seconds protection after restart
+    SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
+    // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+    uint32_t now = millis();
+    SEN66DATA->co2_suppress_until = now + 5000;
+    SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+    SEN66DATA->co2_suppress_active = true;
+    AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
+    
+    // Stop measurement first
+    uint16_t error = sen66->stopMeasurement();
+    if (error) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to stop measurement, error %d"), error);
+      ResponseCmndChar("StopError");
+      return;
+    }
+    
+    // Wait 600ms after stopping measurement (datasheet requirement)
+    delay(600);
+    
+    // Perform calibration
+    uint16_t correction = 0;
+    error = sen66->performForcedCo2Recalibration(targetCo2, correction);
+    if (error) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: CO2 calibration failed with error %d"), error);
+      // Try to restart measurement even if calibration failed
+      sen66->startContinuousMeasurement();
+      ResponseCmndChar("CalibrationError");
+      return;
+    }
+    
+    // Wait for calibration to complete (datasheet: ~500ms)
+    delay(500);
+    
+    // Restart measurement
+    error = sen66->startContinuousMeasurement();
+    if (error) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to restart measurement, error %d"), error);
+      ResponseCmndChar("RestartError");
+      return;
+    }
+    
+    AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 calibration completed at %d ppm, correction: %d ppm"), targetCo2, correction);
+    ResponseCmndNumber(correction);
+  } else {
+    ResponseCmndChar("NotReady");
+  }
+}
+
+void CmndSen66CO2AutoCal(void) {
+  if (sen66 && SEN66DATA) {
+    uint16_t error;
+    
+    // If parameter provided, need to enter idle mode to change setting
+    if (XdrvMailbox.data_len) {
+      // Skip updates during config change and validate first readings afterward
+      SEN66DATA->calibrating = true;
+      SEN66DATA->calibration_end_time = millis() + 1500;  // 1.5 seconds protection after restart
+      SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
+      // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+      uint32_t now = millis();
+      SEN66DATA->co2_suppress_until = now + 5000;
+      SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+      SEN66DATA->co2_suppress_active = true;
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started (AutoCal) - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
+      
+      // Stop measurement to enter idle mode (required for CO2 auto-cal setting)
+      error = sen66->stopMeasurement();
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to stop measurement for CO2 auto-cal setting, error %d"), error);
+        ResponseCmndChar("StopError");
+        return;
+      }
+      
+      // Brief wait for idle mode transition (minimal delay)
+      delay(50);
+      
+      bool enable = (atoi(XdrvMailbox.data) != 0);
+      error = sen66->setCo2SensorAutomaticSelfCalibration(enable ? 1 : 0);
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Setting CO2 auto-calibration setting failed with error %d"), error);
+        // Restart measurement even if setting failed
+        sen66->startContinuousMeasurement();
+        ResponseCmndChar("SetError");
+        return;
+      }
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 auto-calibration setting %s"), enable ? "enabled" : "disabled");
+      
+      uint8_t padding = 0;
+      bool enabled = false;
+      error = sen66->getCo2SensorAutomaticSelfCalibration(padding, enabled);
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Reading CO2 auto-calibration setting failed with error %d"), error);
+        // Restart measurement even if reading failed
+        sen66->startContinuousMeasurement();
+        ResponseCmndChar("ReadError");
+        return;
+      }
+      
+      // Restart measurement
+      error = sen66->startContinuousMeasurement();
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to restart measurement after CO2 auto-cal setting, error %d"), error);
+        ResponseCmndChar("RestartError");
+        return;
+      }
+      
+      ResponseCmndNumber(enabled ? 1 : 0);
+    } else {
+      // No parameter - just read current status (also requires idle mode)
+      SEN66DATA->calibrating = true;
+      SEN66DATA->calibration_end_time = millis() + 1000;  // 1 second protection after restart
+      SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
+      // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+      uint32_t now = millis();
+      SEN66DATA->co2_suppress_until = now + 5000;
+      SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+      SEN66DATA->co2_suppress_active = true;
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started (AutoCal) - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
+      
+      error = sen66->stopMeasurement();
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to stop measurement for CO2 auto-cal status read, error %d"), error);
+        ResponseCmndChar("StopError");
+        return;
+      }
+      
+      delay(50);  // Brief wait for idle mode transition (minimal delay)
+      
+      uint8_t padding = 0;
+      bool enabled = false;
+      error = sen66->getCo2SensorAutomaticSelfCalibration(padding, enabled);
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Reading CO2 auto-calibration setting status failed with error %d"), error);
+        sen66->startContinuousMeasurement();
+        ResponseCmndChar("ReadError");
+        return;
+      }
+      
+      // Restart measurement
+      error = sen66->startContinuousMeasurement();
+      if (error) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("SEN66: Failed to restart measurement after CO2 auto-cal status read, error %d"), error);
+        ResponseCmndChar("RestartError");
+        return;
+      }
+      
+      ResponseCmndNumber(enabled ? 1 : 0);
+    }
+  } else {
+    ResponseCmndChar("NotReady");
+  }
+}
+
 void SEN66Update(void) {  // Perform every second to ensure proper operation of the baseline compensation algorithm
+  if (!SEN66DATA) return;
+  
+  uint32_t now = millis();
+  
+  // Check if CO2 suppression period should end (only after minimum time)
+  if (SEN66DATA->co2_suppress_active) {
+    if (now > SEN66DATA->co2_suppress_until || 
+        (now > SEN66DATA->co2_suppress_min_until && SEN66DATA->co2 >= 300 && SEN66DATA->co2 <= 5000)) {
+      SEN66DATA->co2_suppress_active = false;
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression period ended"));
+    }
+  }
+  
+  // Check if protection period has ended (applies to both calibration and config changes)
+  if (SEN66DATA->calibrating && now > SEN66DATA->calibration_end_time) {
+    SEN66DATA->calibrating = false;
+    SEN66DATA->post_calibration_validation = true;  // Enable validation for next readings
+    AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Protection period ended, validating next readings"));
+  }
+  
+  // Skip reading during protection period to avoid publishing invalid values
+  if (SEN66DATA->calibrating) {
+    DEBUG_SENSOR_LOG(PSTR("SEN66: Skipping update during protection period"));
+    return;
+  }
+
   uint16_t error;
   //uint8_t padding;
   //bool dataReady;
@@ -194,11 +443,51 @@ void SEN66Update(void) {  // Perform every second to ensure proper operation of 
     return;
   }
 
-  g_sen66_valid = true;                  // NEU: Daten gültig
+  // Always validate CO2 values - reject implausible readings anytime
+  if (SEN66DATA->co2 == 0xFFFF || SEN66DATA->co2 > 5000 || (SEN66DATA->co2 < 300 && SEN66DATA->co2 > 0)) {  
+    // Reject: invalid (65535), too high (>5000ppm), or too low (1-299ppm)
+    AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Rejecting implausible CO2 value: %u ppm"), SEN66DATA->co2);
+    g_sen66_valid = false;  // Mark as invalid - don't publish
+    return;
+  }
+  
+  // Additional validation after operations - re-enter protection for first invalid readings
+  if (SEN66DATA->post_calibration_validation && 
+      (SEN66DATA->co2 == 0xFFFF || SEN66DATA->co2 > 5000 || (SEN66DATA->co2 < 300 && SEN66DATA->co2 > 0))) {  
+    // Re-enter protection mode and try again
+    SEN66DATA->calibrating = true;
+    SEN66DATA->calibration_end_time = millis() + 1000;  // Retry in 1 second
+    g_sen66_valid = false;
+    return;
+  }
+  
+  // First plausible value received - disable validation, but respect minimum suppression time
+  if (SEN66DATA->post_calibration_validation && SEN66DATA->co2 >= 300 && SEN66DATA->co2 <= 5000) {
+    SEN66DATA->post_calibration_validation = false;
+    // Only stop suppression if minimum time has passed
+    if (millis() > SEN66DATA->co2_suppress_min_until) {
+      SEN66DATA->co2_suppress_active = false;
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: First plausible CO2 value: %u ppm - suppression ended"), SEN66DATA->co2);
+    } else {
+      AddLog(LOG_LEVEL_INFO, PSTR("SEN66: First plausible CO2 value: %u ppm - suppression continues (min time)"), SEN66DATA->co2);
+    }
+  }
+  
+  g_sen66_valid = true;                  // Only set valid if we reach this point
+  
+  // Log CO2 value only after successful validation
+  //if (!isnan(SEN66DATA->co2)) {
+  //  AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Current CO2: %u ppm"), SEN66DATA->co2);
+  //} else {
+  //  AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Current CO2: nan"));
+  //}
 }
 
 void SEN66Show(bool json) {
-  if (!g_sen66_valid) {                  // NEU: Bei Fehler nichts anzeigen/anhängen
+  if (!SEN66DATA) return;
+  
+  // Don't show anything during calibration or if data is invalid
+  if (!g_sen66_valid && !SEN66DATA->calibrating) {
     return;
   }
   char types[10];
@@ -207,7 +496,6 @@ void SEN66Show(bool json) {
   float temperature = NAN;
   float humidity = NAN;
   float abs_humidity = NAN;
-  float temp_raw = NAN;
   float dew = NAN;
   float npm0_5 = SEN66DATA->numberConcentrationPm0p5/10.0f;
   float npm1 = (SEN66DATA->numberConcentrationPm1p0 - SEN66DATA->numberConcentrationPm0p5)/10.0f;
@@ -225,11 +513,11 @@ void SEN66Show(bool json) {
   //AddLog(LOG_LEVEL_INFO, PSTR("voc %f"), voc);
   bool ahum_available = (!isnan(SEN66DATA->ambientTemperature) && !isnan(SEN66DATA->ambientHumidity) && (SEN66DATA->ambientHumidity > 0));
   if (ahum_available) {
-    temp_raw = (SEN66DATA->ambientTemperature / 200.0f);
-    temperature = ConvertTemp(temp_raw + SEN66DATA->temp_offset);
+    temperature = (SEN66DATA->ambientTemperature / 200.0f);
     humidity = ConvertHumidity(SEN66DATA->ambientHumidity/100.0f);
-    dew =      CalcTempHumToDew(temp_raw,humidity);
-    abs_humidity = CalcTempHumToAbsHum(temp_raw, humidity);
+    dew =      CalcTempHumToDew(temperature,humidity);
+    abs_humidity = CalcTempHumToAbsHum(temperature, humidity);
+    temperature = ConvertTemp(temperature + SEN66DATA->temp_offset);
     dtostrfd(humidity, Settings->flag2.humidity_resolution, str_humidity);
     dtostrfd(dew, Settings->flag2.temperature_resolution, str_dewpoint);
   }
@@ -240,9 +528,14 @@ void SEN66Show(bool json) {
       &pm1, &pm2_5, &pm4, &pm10);
     ResponseAppend_P(PSTR("\"PN0-0_5\":%1_f,\"PN0_5-1\":%1_f,\"PN1-2_5\":%1_f,\"PN2_5-4\":%1_f,\"PN4-10\":%1_f,"),
       &npm0_5, &npm1, &npm2_5, &npm4, &npm10);
+    // Only include CO2 if not suppressed and valid
     if (!isnan(SEN66DATA->co2)) {
+      if (!SEN66DATA->co2_suppress_active) {
         ResponseAppend_P(PSTR("\"CO2\":%u,"), SEN66DATA->co2);
+      } else {
+        AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Suppressing CO2 value %u from JSON output (suppress active)"), SEN66DATA->co2);
       }
+    }
     if (!isnan(SEN66DATA->noxIndex)) {
       ResponseAppend_P(PSTR("\"NOx\":%d,"), nox);
     }
@@ -267,9 +560,14 @@ void SEN66Show(bool json) {
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "1","2.5", &npm2_5);
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "2.5","4", &npm4);
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "4","10", &npm10);
+    // Only show CO2 in web if not suppressed and valid
     if (!isnan(SEN66DATA->co2)) {
+      if (!SEN66DATA->co2_suppress_active) {
         WSContentSend_PD(HTTP_SNS_CO2, types, SEN66DATA->co2);
+      } else {
+        AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Suppressing CO2 value %u from web output"), SEN66DATA->co2);
       }
+    }
     if (!isnan(SEN66DATA->noxIndex)) {
       WSContentSend_PD(HTTP_SNS_NOX, types, nox);
     }
@@ -291,7 +589,7 @@ void SEN66Show(bool json) {
 \*********************************************************************************************/
 
 bool Xsns123(uint32_t function) {
-  //if (!I2cEnabled(XI2C_76)) { return false; }
+  if (!I2cEnabled(XI2C_76)) { return false; }
 
   bool result = false;
 
