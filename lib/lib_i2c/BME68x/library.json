@@ -21,6 +21,8 @@
       "+<src/bsec.cpp>",
       "+<src/bsec.h>",
       "+<src/bsec_interface.c>",
+      "+<src/bsec_wrapper.c>",
+      "+<src/bsec_config_33v_3s_4d.h>",
       "+<src/inc/bsec_datatypes.h>",
       "+<src/inc/bsec_interface.h>"
     ],

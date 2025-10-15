@@ -366,12 +366,13 @@ static void OPCProcessMeasurements(void) {
       } else {
         OPC.data.concstr[0] = '\0';
         const float norm = 10000.0f / ((uint32_t)n3->period * n3->flow);
-        for (uint8_t i = 0; i < 24; ++i) {
+        uint8_t bin_count = (OPC.status.gain == 0 || OPC.status.gain == 1) ? 12 : 24;
+        for (uint8_t i = 0; i < bin_count; ++i) {
           const float conc = n3->bins[i] * norm;
           char        tmp[16];
           dtostrfd(conc, 2, tmp);
           strlcat(OPC.data.concstr, tmp, sizeof(OPC.data.concstr));
-          if (i < 23) strlcat(OPC.data.concstr, PSTR(","), sizeof(OPC.data.concstr));
+          if (i < (bin_count - 1)) strlcat(OPC.data.concstr, PSTR(","), sizeof(OPC.data.concstr));
         }
         OPC.data.flow = n3->flow * 0.0006f;             // l/min
       }
@@ -803,7 +804,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     ResponseAppend_P(PSTR(",\"PM%s\":%1_f"), OPCReplaceDotWithUnderscore(OPC.data.pm.dia_c), &OPC.data.pm.c);
 
     if (OPC.mode & OPC_PMHIST) {
-      ResponseAppend_P(PSTR(",\"Histogram\":[%s]"),  OPC.data.concstr);
+      ResponseAppend_P(PSTR(",\"Hist\":[%s]"),  OPC.data.concstr);
       ResponseAppend_P(PSTR(",\"Flow\":%3_f"),       &OPC.data.flow);
       ResponseAppend_P(PSTR(",\"Period\":%2_f"),     &OPC.data.period);
       ResponseAppend_P(PSTR(","));
@@ -830,8 +831,10 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
 
 bool Xsns124(uint32_t function) {
   bool result = false;
-  if (FUNC_INIT == function) {
+  if (FUNC_PRE_INIT == function) {
     OPCPreInit();
+  } else if (FUNC_INIT == function) {
+    // OPC pin already initialized in FUNC_PRE_INIT
   } else {
 
     switch (function) {

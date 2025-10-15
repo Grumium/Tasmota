@@ -236,12 +236,12 @@ void CmndSen66CO2Calibrate(void) {
     
     // Skip updates during calibration and validate first readings afterward
     SEN66DATA->calibrating = true;
-    SEN66DATA->calibration_end_time = millis() + 2000;  // 2 seconds protection after restart
+    SEN66DATA->calibration_end_time = millis() + 15000;  // 15 seconds protection after restart
     SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
-    // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+    // Start CO2 suppression for up to 15 seconds, minimum 8 seconds
     uint32_t now = millis();
-    SEN66DATA->co2_suppress_until = now + 5000;
-    SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+    SEN66DATA->co2_suppress_until = now + 15000;
+    SEN66DATA->co2_suppress_min_until = now + 8000;  // Minimum 8 seconds
     SEN66DATA->co2_suppress_active = true;
     AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
     
@@ -293,12 +293,12 @@ void CmndSen66CO2AutoCal(void) {
     if (XdrvMailbox.data_len) {
       // Skip updates during config change and validate first readings afterward
       SEN66DATA->calibrating = true;
-      SEN66DATA->calibration_end_time = millis() + 1500;  // 1.5 seconds protection after restart
+      SEN66DATA->calibration_end_time = millis() + 10000;  // 10 seconds protection after restart
       SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
-      // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+      // Start CO2 suppression for up to 10 seconds, minimum 6 seconds
       uint32_t now = millis();
-      SEN66DATA->co2_suppress_until = now + 5000;
-      SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+      SEN66DATA->co2_suppress_until = now + 10000;
+      SEN66DATA->co2_suppress_min_until = now + 6000;  // Minimum 6 seconds
       SEN66DATA->co2_suppress_active = true;
       AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started (AutoCal) - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
       
@@ -347,12 +347,12 @@ void CmndSen66CO2AutoCal(void) {
     } else {
       // No parameter - just read current status (also requires idle mode)
       SEN66DATA->calibrating = true;
-      SEN66DATA->calibration_end_time = millis() + 1000;  // 1 second protection after restart
+      SEN66DATA->calibration_end_time = millis() + 8000;  // 8 seconds protection after restart
       SEN66DATA->post_calibration_validation = false;  // Will be enabled when period ends
-      // Start CO2 suppression for up to 5 seconds, minimum 2 seconds
+      // Start CO2 suppression for up to 8 seconds, minimum 5 seconds
       uint32_t now = millis();
-      SEN66DATA->co2_suppress_until = now + 5000;
-      SEN66DATA->co2_suppress_min_until = now + 2000;  // Minimum 2 seconds
+      SEN66DATA->co2_suppress_until = now + 8000;
+      SEN66DATA->co2_suppress_min_until = now + 5000;  // Minimum 5 seconds
       SEN66DATA->co2_suppress_active = true;
       AddLog(LOG_LEVEL_INFO, PSTR("SEN66: CO2 suppression started (AutoCal) - until %lu (min %lu)"), SEN66DATA->co2_suppress_until, SEN66DATA->co2_suppress_min_until);
       
@@ -528,12 +528,17 @@ void SEN66Show(bool json) {
       &pm1, &pm2_5, &pm4, &pm10);
     ResponseAppend_P(PSTR("\"PN0-0_5\":%1_f,\"PN0_5-1\":%1_f,\"PN1-2_5\":%1_f,\"PN2_5-4\":%1_f,\"PN4-10\":%1_f,"),
       &npm0_5, &npm1, &npm2_5, &npm4, &npm10);
-    // Only include CO2 if not suppressed and valid
+    // Show CO2 as 0 when suppressed or during protection period, normal value when not suppressed
     if (!isnan(SEN66DATA->co2)) {
-      if (!SEN66DATA->co2_suppress_active) {
+      if (!SEN66DATA->co2_suppress_active && !SEN66DATA->calibrating) {
         ResponseAppend_P(PSTR("\"CO2\":%u,"), SEN66DATA->co2);
       } else {
-        AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Suppressing CO2 value %u from JSON output (suppress active)"), SEN66DATA->co2);
+        ResponseAppend_P(PSTR("\"CO2\":0,"));
+        if (SEN66DATA->calibrating) {
+          AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Showing CO2 as 0 in JSON output during protection period (actual: %u)"), SEN66DATA->co2);
+        } else {
+          AddLog(LOG_LEVEL_INFO, PSTR("SEN66: Showing CO2 as 0 in JSON output during suppression (actual: %u)"), SEN66DATA->co2);
+        }
       }
     }
     if (!isnan(SEN66DATA->noxIndex)) {
@@ -560,12 +565,17 @@ void SEN66Show(bool json) {
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "1","2.5", &npm2_5);
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "2.5","4", &npm4);
     WSContentSend_PD(HTTP_SNS_F_PARTICLE_NUMBER_CONCENTRATION, types, "4","10", &npm10);
-    // Only show CO2 in web if not suppressed and valid
+    // Show CO2 as 0 in web when suppressed or during protection period, normal value when not suppressed
     if (!isnan(SEN66DATA->co2)) {
-      if (!SEN66DATA->co2_suppress_active) {
+      if (!SEN66DATA->co2_suppress_active && !SEN66DATA->calibrating) {
         WSContentSend_PD(HTTP_SNS_CO2, types, SEN66DATA->co2);
       } else {
-        AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Suppressing CO2 value %u from web output"), SEN66DATA->co2);
+        WSContentSend_PD(HTTP_SNS_CO2, types, 0);
+        if (SEN66DATA->calibrating) {
+          AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Showing CO2 as 0 in web output during protection period (actual: %u)"), SEN66DATA->co2);
+        } else {
+          AddLog(LOG_LEVEL_DEBUG, PSTR("SEN66: Showing CO2 as 0 in web output during suppression (actual: %u)"), SEN66DATA->co2);
+        }
       }
     }
     if (!isnan(SEN66DATA->noxIndex)) {

@@ -30,7 +30,7 @@ struct BMV080_State {
   uint32_t recover_attempts  = 0;
 
   struct {
-    float pm1 = NAN, pm25 = NAN, pm10 = NAN;
+    uint16_t pm1 = 0, pm25 = 0, pm10 = 0;
     bool  obstructed = false;
     bool  out_of_range = false;
     float runtime_s = 0;
@@ -88,9 +88,9 @@ public:
 
   static void DataReady(bmv080_output_t out, void*) {
     BMV.last.runtime_s    = out.runtime_in_sec;
-    BMV.last.pm1          = out.pm1_mass_concentration;
-    BMV.last.pm25         = out.pm2_5_mass_concentration;
-    BMV.last.pm10         = out.pm10_mass_concentration;
+    BMV.last.pm1          = (uint16_t)out.pm1_mass_concentration;
+    BMV.last.pm25         = (uint16_t)out.pm2_5_mass_concentration;
+    BMV.last.pm10         = (uint16_t)out.pm10_mass_concentration;
     BMV.last.obstructed   = out.is_obstructed;
     BMV.last.out_of_range = out.is_outside_measurement_range;
     BMV.last.valid        = true;
@@ -236,17 +236,10 @@ static void BMV080_Every250ms(void) {
 static void BMV080_Show(bool json) {
   if (!BMV.ready || !BMV.cfg.powered || !BMV.last.valid) return;
   if (json) {
-    ResponseAppend_P(PSTR(",\"BMV080\":{\"I2C\":\"0x%02X\",\"Power\":%s,"
-                          "\"Mode\":\"Continuous\",\"Algo\":\"%s\",\"IntTime\":%u,"
-                          "\"PM1\":%1_f,\"PM2_5\":%1_f,\"PM10\":%1_f,"
-                          "\"Obstruct\":%s,\"OutOfRange\":%s}"),
-                     BMV080_ADDR,
-                     BMV.cfg.powered ? PSTR("true") : PSTR("false"),
-                     BMV_AlgoNameId(BMV.cfg.algo_id),
-                     (uint16_t)(BMV.cfg.integration_time + 0.5f),
-                     &BMV.last.pm1, &BMV.last.pm25, &BMV.last.pm10,
-                     BMV.last.obstructed ? PSTR("true") : PSTR("false"),
-                     BMV.last.out_of_range ? PSTR("true") : PSTR("false"));
+    ResponseAppend_P(PSTR(",\"BMV080\":{\"PM1\":%u,\"PM2_5\":%u,\"PM10\":%u,"
+                          "\"Obstruct\":%u,\"OutOfRange\":%u}"),
+                     BMV.last.pm1, BMV.last.pm25, BMV.last.pm10,
+                     BMV.last.obstructed, BMV.last.out_of_range);
   }
 #ifdef USE_WEBSERVER
   else {
@@ -255,10 +248,10 @@ static void BMV080_Show(bool json) {
     WSContentSend_P(PSTR("<tr><th>BMV080</th><td>Algo</td><td>%s</td></tr>"),
       BMV_AlgoNameId(BMV.cfg.algo_id));
     WSContentSend_P(PSTR("<tr><th>BMV080</th><td>IntTime</td><td>%us</td></tr>"),
-      (uint16_t)(BMV.cfg.integration_time + 0.5f));
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, "BMV080", "1",   &BMV.last.pm1);
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, "BMV080", "2.5", &BMV.last.pm25);
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, "BMV080", "10",  &BMV.last.pm10);
+      (uint16_t)BMV.cfg.integration_time);
+    WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "1",   BMV.last.pm1);
+    WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "2.5", BMV.last.pm25);
+    WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "10",  BMV.last.pm10);
     WSContentSend_P(PSTR("<tr><th>BMV080</th><td>Obstruct</td><td>%s</td></tr>"),
       BMV.last.obstructed ? PSTR("true") : PSTR("false"));
     WSContentSend_P(PSTR("<tr><th>BMV080</th><td>OutOfRange</td><td>%s</td></tr>"),
@@ -325,7 +318,7 @@ static bool BMV080Cmd(void) {
   Response_P(PSTR("{\"BMV080\":{\"Power\":%s,\"Mode\":\"Continuous\",\"Algo\":\"%s\",\"IntTime\":%u}}"),
              BMV.cfg.powered ? PSTR("true") : PSTR("false"),
              BMV_AlgoNameId(BMV.cfg.algo_id),
-             (uint16_t)(BMV.cfg.integration_time + 0.5f));
+             (uint16_t)BMV.cfg.integration_time);
   return true;
 }
 
