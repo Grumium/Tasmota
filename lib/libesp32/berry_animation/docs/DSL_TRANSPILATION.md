@@ -48,7 +48,7 @@ For detailed information about the DSL transpiler's internal architecture, inclu
 Compiles DSL source code to Berry code without executing it.
 
 ```berry
-var dsl_source = "color red = #FF0000\n"
+var dsl_source = "color red = 0xFF0000\n"
                  "animation red_anim = solid(color=red)\n"
                  "run red_anim"
 
@@ -60,7 +60,7 @@ print(berry_code)  # Shows generated Berry code
 Compiles and executes DSL source code in one step.
 
 ```berry
-animation_dsl.execute("color blue = #0000FF\n"
+animation_dsl.execute("color blue = 0x0000FF\n"
                       "animation blue_anim = solid(color=blue)\n"
                       "run blue_anim for 5s")
 ```
@@ -71,24 +71,13 @@ Loads DSL source from a file and executes it.
 ```berry
 # Create a DSL file
 var f = open("my_animation.dsl", "w")
-f.write("color green = #00FF00\n"
+f.write("color green = 0x00FF00\n"
         "animation pulse_green = pulsating_animation(color=green, period=2s)\n"
         "run pulse_green")
 f.close()
 
 # Load and execute
 animation_dsl.load_file("my_animation.dsl")
-```
-
-### Runtime Management
-
-#### `animation_dsl.create_runtime()`
-Creates a DSL runtime instance for advanced control.
-
-```berry
-var runtime = animation_dsl.create_runtime()
-runtime.load_dsl(dsl_source)
-runtime.execute()
 ```
 
 ## DSL Language Overview
@@ -100,7 +89,7 @@ The Animation DSL uses a declarative syntax with named parameters. All animation
 - **Import statements**: `import module_name` for loading Berry modules
 - **Named parameters**: All function calls use `name=value` syntax
 - **Time units**: `2s`, `500ms`, `1m`, `1h` 
-- **Hex colors**: `#FF0000`, `#80FF0000` (ARGB)
+- **Hex colors**: `0xFF0000`, `0x80FF0000` (ARGB)
 - **Named colors**: `red`, `blue`, `white`, etc.
 - **Comments**: `# This is a comment`
 - **Property assignment**: `animation.property = value`
@@ -116,8 +105,8 @@ import user_functions
 strip length 60
 
 # Color definitions
-color red = #FF0000
-color blue = #0000FF
+color red = 0xFF0000
+color blue = 0x0000FF
 
 # Animation definitions with named parameters
 animation pulse_red = pulsating_animation(color=red, period=2s)
@@ -149,7 +138,7 @@ animation wave = wave_animation(waveform=SINE)
 # Transpiles to: animation.SINE (direct access)
 
 # If custom_color doesn't exist in animation module  
-color custom_color = #FF0000
+color custom_color = 0xFF0000
 animation solid_red = solid(color=custom_color)
 # Transpiles to: custom_color_ (user-defined variable)
 ```
@@ -448,7 +437,7 @@ animation.register_user_function("twinkle", custom_twinkle)
 
 ```berry
 # Use in DSL - engine is automatically passed as first argument
-animation gold_twinkle = twinkle(#FFD700, 8, 500ms)
+animation gold_twinkle = twinkle(0xFFD700, 8, 500ms)
 animation blue_twinkle = twinkle(blue, 12, 300ms)
 run gold_twinkle
 ```
@@ -463,8 +452,8 @@ Define event handlers that respond to triggers:
 
 ```berry
 # Define animations for different states
-color normal = #000080
-color alert = #FF0000
+color normal = 0x000080
+color alert = 0xFF0000
 
 animation normal_state = solid(color=normal)
 animation alert_state = pulsating_animation(color=alert, period=500ms)
@@ -600,16 +589,67 @@ set strip_len = strip_length()      # Single function call
 set strip_len3 = (strip_len + 1) / 2  # Computation with existing value
 ```
 
+**Template Parameter Validation:**
+```berry
+# Error: Duplicate parameter names
+template bad_template {
+  param color type color
+  param color type number  # Error: duplicate parameter name
+}
+# Transpiler error: "Duplicate parameter name 'color' in template"
+
+# Error: Reserved keyword as parameter name
+template reserved_template {
+  param animation type color  # Error: conflicts with reserved keyword
+}
+# Transpiler error: "Parameter name 'animation' conflicts with reserved keyword"
+
+# Error: Built-in color name as parameter
+template color_template {
+  param red type number  # Error: conflicts with built-in color
+}
+# Transpiler error: "Parameter name 'red' conflicts with built-in color name"
+
+# Error: Invalid type annotation
+template type_template {
+  param value type invalid_type  # Error: invalid type
+}
+# Transpiler error: "Invalid parameter type 'invalid_type'. Valid types are: [...]"
+
+# Warning: Unused parameter (compilation succeeds)
+template unused_template {
+  param used_color type color
+  param unused_param type number  # Warning: never used
+  
+  animation test = solid(color=used_color)
+  run test
+}
+# Transpiler warning: "Template 'unused_template' parameter 'unused_param' is declared but never used"
+```
+
 ### Error Categories
 
 - **Syntax errors**: Invalid DSL syntax (lexer/parser errors)
 - **Factory validation**: Non-existent or invalid animation/color provider factories
 - **Parameter validation**: Invalid parameter names in constructors or property assignments
+- **Template validation**: Invalid template parameter names, types, or usage patterns
 - **Constraint validation**: Parameter values that violate defined constraints (min/max, enums, types)
 - **Reference validation**: Using undefined colors, animations, or variables
 - **Type validation**: Incorrect parameter types or incompatible assignments
 - **Safety validation**: Dangerous patterns that could cause memory leaks or performance issues
 - **Runtime errors**: Errors during Berry code execution (rare with good validation)
+
+### Warning Categories
+
+The DSL transpiler also generates **warnings** that don't prevent compilation but indicate potential code quality issues:
+
+- **Unused parameters**: Template parameters that are declared but never used in the template body
+- **Code quality**: Suggestions for better coding practices
+
+**Warning Behavior:**
+- Warnings are included as comments in the generated Berry code
+- Compilation succeeds even with warnings present
+- Warnings help maintain code quality without being overly restrictive
 
 ## Performance Considerations
 
@@ -645,17 +685,6 @@ set strip_len3 = (strip_len + 1) / 2  # Computation with existing value
    var performance_critical_anim = animation.create_optimized_animation()
    ```
 
-3. **Minimize DSL recompilation**:
-   ```berry
-   # Good: Compile once
-   var runtime = animation_dsl.create_runtime()
-   runtime.load_dsl(source)
-   runtime.execute()
-   
-   # Avoid: Recompiling same DSL repeatedly
-   # animation_dsl.execute(same_source)  # Don't do this in loops
-   ```
-
 ## Integration Examples
 
 ### With Tasmota Rules
@@ -667,11 +696,11 @@ import animation_dsl
 
 def handle_rule_trigger(event)
   if event == "motion"
-    animation_dsl.execute("color alert = #FF0000\n"
+    animation_dsl.execute("color alert = 0xFF0000\n"
                           "animation alert_anim = pulsating_animation(color=alert, period=500ms)\n"
                           "run alert_anim for 5s")
   elif event == "door"
-    animation_dsl.execute("color welcome = #00FF00\n"
+    animation_dsl.execute("color welcome = 0x00FF00\n"
                           "animation welcome_anim = breathe_animation(color=welcome, period=2s)\n"
                           "run welcome_anim for 8s")
   end
@@ -712,8 +741,8 @@ webserver.on("/execute_dsl", web_execute_dsl)
    strip length 60
    
    # Colors next
-   color red = #FF0000
-   color blue = #0000FF
+   color red = 0xFF0000
+   color blue = 0x0000FF
    
    # Animations with named parameters
    animation red_solid = solid(color=red)
@@ -734,20 +763,20 @@ webserver.on("/execute_dsl", web_execute_dsl)
 2. **Use meaningful names**:
    ```berry
    # Good
-   color warning_red = #FF0000
+   color warning_red = 0xFF0000
    animation door_alert = pulsating_animation(color=warning_red, period=500ms)
    
    # Avoid
-   color c1 = #FF0000
+   color c1 = 0xFF0000
    animation a1 = pulsating_animation(color=c1, period=500ms)
    ```
 
 3. **Comment your DSL**:
    ```berry
    # Security system colors
-   color normal_blue = #000080    # Idle state
-   color alert_red = #FF0000      # Alert state
-   color success_green = #00FF00  # Success state
+   color normal_blue = 0x000080    # Idle state
+   color alert_red = 0xFF0000      # Alert state
+   color success_green = 0x00FF00  # Success state
    
    # Main security animation sequence
    sequence security_demo {

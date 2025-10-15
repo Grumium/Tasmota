@@ -15,7 +15,8 @@ class mqttdata_cls
   var line_cnt                                      # Number of lines
   var line_teleperiod                               # Skip any device taking longer to respond (probably offline)
   var line_highlight                                # Highlight latest change duration
-  var line_highlight_color                          # Highlight color
+  var line_highlight_color                          # Latest change highlight color
+  var line_lowuptime_color                          # Low uptime highlight color
   var line_duration                                 # Duration option
   var line_topic_is_hostname                        # Treat topic as hostname
   var list_buffer                                   # Buffer storing lines
@@ -24,9 +25,10 @@ class mqttdata_cls
 #    self.line_option = 1                            # Scroll line_cnt lines
     self.line_option = 2                            # Show devices updating within line_teleperiod
     self.line_cnt = 10                              # Option 1 number of lines to show
-    self.line_teleperiod = 1200                     # Option 2 number of teleperiod seconds for devices to be shown
+    self.line_teleperiod = 600                      # Option 2 number of teleperiod seconds for devices to be shown
     self.line_highlight = 10                        # Highlight latest change duration in seconds
-    self.line_highlight_color = "yellow"            # Highlight HTML color like "#FFFF00" or "yellow"
+    self.line_highlight_color = "yellow"            # Latest change highlight HTML color like "#FFFF00" or "yellow"
+    self.line_lowuptime_color = "lime"              # Low uptime highlight HTML color like "#00FF00" or "lime"
     self.line_duration = 0                          # Show duration of last state message (1)
     self.line_topic_is_hostname = 0                 # Treat topic as hostname (1)
 
@@ -62,13 +64,14 @@ class mqttdata_cls
           ipaddress = state['IPAddress']            # 192.168.2.123
         end
         var last_seen = tasmota.rtc('local')
-        var line = format("%s,%s,%s,%d", topic, ipaddress, uptime, last_seen)
+        var line = format("%s\001%s\001%s\001%d", topic, ipaddress, uptime, last_seen)
 
         if self.list_buffer.size()
           var list_index = 0
           var list_size = size(self.list_buffer)
+          var topic_delim = format("%s\001", topic) # Add find delimiter
           while list_index < list_size              # Use while loop as counter is decremented
-            if 0 == string.find(self.list_buffer[list_index], topic)
+            if 0 == string.find(self.list_buffer[list_index], topic_delim)
               self.list_buffer.remove(list_index)   # Remove current state
               list_size -= 1                        # Continue for duplicates
             end
@@ -118,7 +121,7 @@ class mqttdata_cls
       var list_index = 0
       var list_size = size(self.list_buffer)
       while list_index < list_size
-        var splits = string.split(self.list_buffer[list_index], ",")
+        var splits = string.split(self.list_buffer[list_index], "\001")
         var last_seen = int(splits[3])
         if time_window > last_seen                  # Remove offline devices
           self.list_buffer.remove(list_index)
@@ -140,7 +143,7 @@ class mqttdata_cls
       end
       var msg = "</table><table style='width:100%;font-size:80%'>" # Terminate two column table and open new table
       while list_index < list_size
-        var splits = string.split(self.list_buffer[list_index], ",")
+        var splits = string.split(self.list_buffer[list_index], "\001")
         var topic = splits[0]                       # topic or hostname
         var ipaddress = splits[1]
         var uptime = splits[2]
@@ -148,19 +151,27 @@ class mqttdata_cls
 
         msg += "<tr>"
         if ipaddress
-          msg += format("<td><a target=_blank href='http://%s.'>%s</a></td><td><a target=_blank href='http://%s'>%s</a></td>",
+          msg += format("<td><a target=_blank href='http://%s.'>%s&nbsp</a></td><td><a target=_blank href='http://%s'>%s&nbsp</a></td>",
                         topic, topic, ipaddress, ipaddress)
         else
           if self.line_topic_is_hostname
-            msg += format("<td><a target=_blank href='http://%s.'>%s</a></td><td>&nbsp</td>",
+            msg += format("<td><a target=_blank href='http://%s.'>%s&nbsp</a></td><td>&nbsp</td>",
                           topic, topic)
           else
-            msg += format("<td>%s</td><td>&nbsp</td>", topic)
+            msg += format("<td>%s&nbsp</td><td>&nbsp</td>", topic)
           end
         end
 
+        var uptime_str = string.replace(uptime, "T", ":")  # 11T21:50:34 -> 11:21:50:34
+        var uptime_splits = string.split(uptime_str, ":")
+        var uptime_sec = (int(uptime_splits[0]) * 86400) + # 11 * 86400
+                         (int(uptime_splits[1]) * 3600) +  # 21 * 3600
+                         (int(uptime_splits[2]) * 60) +    # 50 * 60
+                         int(uptime_splits[3])      # 34 
         if last_seen >= (now - self.line_highlight) # Highlight changes within latest seconds
           msg += format("<td align='right' style='color:%s'>%s</td>", self.line_highlight_color, uptime)
+        elif uptime_sec < self.line_teleperiod      # Highlight changes just after restart
+          msg += format("<td align='right' style='color:%s'>%s</td>", self.line_lowuptime_color, uptime)
         else 
           msg += format("<td align='right'>%s</td>", uptime)
         end

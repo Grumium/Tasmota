@@ -49,10 +49,12 @@ import "dsl/transpiler.be" as dsl_transpiler
 register_to_dsl(dsl_transpiler)
 import "dsl/symbol_table.be" as dsl_symbol_table
 register_to_dsl(dsl_symbol_table)
-import "dsl/runtime.be" as dsl_runtime
-register_to_dsl(dsl_runtime)
 import "dsl/named_colors.be" as dsl_named_colors
 register_to_dsl(dsl_named_colors)
+
+# Import Web UI components
+import "webui/animation_web_ui.be" as animation_web_ui
+register_to_dsl(animation_web_ui)
 
 # Main DSL compilation function
 # Compiles DSL source code to Berry code
@@ -60,6 +62,7 @@ register_to_dsl(dsl_named_colors)
 # @param source: string - DSL source code
 # @return string - Generated Berry code
 def compile_dsl_source(source)
+  import animation_dsl
   return animation_dsl.compile_dsl(source)
 end
 animation_dsl.compile = compile_dsl_source
@@ -70,6 +73,7 @@ animation_dsl.compile = compile_dsl_source
 # @param source: string - DSL source code
 # @return any - Result of execution
 def execute(source)
+  import animation_dsl
   var berry_code = animation_dsl.compile(source)
   var compiled_fn = compile(berry_code)
   return compiled_fn()
@@ -81,6 +85,7 @@ animation_dsl.execute = execute
 # @param filename: string - Path to DSL file
 # @return any - Result of execution
 def load_file(filename)
+  import animation_dsl
   var f = open(filename, "r")
   if f == nil
     raise "io_error", f"Cannot open DSL file: {filename}"
@@ -93,13 +98,72 @@ def load_file(filename)
 end
 animation_dsl.load_file = load_file
 
-# Create a DSL runtime instance
+# Compile .anim file to .be file
+# Takes a filename with .anim suffix and compiles to same prefix with .be suffix
 #
-# @return DSLRuntime - New runtime instance
-def create_runtime(strip, debug_mode)
-  var engine = animation.create_engine(strip)
-  return animation_dsl.DSLRuntime(engine, debug_mode)
+# @param filename: string - Path to .anim file
+# @return bool - True if compilation successful
+# @raises "io_error" - If file cannot be read or written
+# @raises "dsl_compilation_error" - If DSL compilation fails
+# @raises "invalid_filename" - If filename doesn't have .anim extension
+def compile_file(filename)
+  import string
+  import animation_dsl
+  
+  # Validate input filename
+  if !string.endswith(filename, ".anim")
+    raise "invalid_filename", f"Input file must have .anim extension: {filename}"
+  end
+  
+  # Generate output filename
+  var base_name = filename[0..-6]  # Remove .anim extension (5 chars + 1 for 0-based)
+  var output_filename = base_name + ".be"
+  
+  # Read DSL source
+  var f = open(filename, "r")
+  if f == nil
+    raise "io_error", f"Cannot open input file: {filename}"
+  end
+  
+  var dsl_source = f.read()
+  f.close()
+  
+  # Compile DSL to Berry code
+  var berry_code = animation_dsl.compile(dsl_source)
+  if berry_code == nil
+    raise "dsl_compilation_error", f"DSL compilation failed for: {filename}"
+  end
+  
+  # Generate header with metadata (no original source for compile_file)
+  var header = "# Generated Berry code from Animation DSL\n" +
+               f"# Source: {filename}\n" +
+               "# Generated automatically by animation_dsl.compile_file()\n" +
+               "# \n" +
+               "# Do not edit manually - changes will be overwritten\n" +
+               "\n"
+  
+  # Write complete Berry file (no footer with original source)
+  var output_f = open(output_filename, "w")
+  if output_f == nil
+    raise "io_error", f"Cannot create output file: {output_filename}"
+  end
+  
+  output_f.write(header + berry_code)
+  output_f.close()
+  
+  return true
 end
-animation_dsl.create_runtime = create_runtime
+animation_dsl.compile_file = compile_file
+
+# this function is called when the module is loaded
+def animation_dsl_init(m)
+  import animation
+  # load the Web UI component
+  var animation_web_ui = m.animation_web_ui
+  animation.web_ui = animation_web_ui()     # create an instance and store in "animation.web_ui"
+
+  return m    # return the module unchanged
+end
+animation_dsl.init = animation_dsl_init
 
 return animation_dsl

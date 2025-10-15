@@ -165,9 +165,7 @@ class AnimationEngine
       return self._add_animation(obj)
     else
       # Unknown type - provide helpful error message
-      import introspect
-      var class_name = introspect.name(obj)
-      raise "type_error", f"Cannot add object of type '{class_name}' to engine. Expected Animation or SequenceManager."
+      raise "type_error", "only Animation or SequenceManager"
     end
   end
   
@@ -182,8 +180,7 @@ class AnimationEngine
     elif isinstance(obj, animation.animation)
       return self.remove_animation(obj)
     else
-      # Unknown type - provide helpful error message
-      raise "type_error", f"Cannot remove object of type '{classname(obj)}' from engine. Expected Animation or SequenceManager."
+      # Unknown type - ignore
     end
   end
   
@@ -302,7 +299,7 @@ class AnimationEngine
       if rendered
         anim.post_render(self.temp_buffer, time_ms)
         # Blend temp buffer into main buffer
-        self.frame_buffer.blend_pixels(self.temp_buffer)
+        self.frame_buffer.blend_pixels(self.frame_buffer.pixels, self.temp_buffer.pixels)
       end
       i += 1
     end
@@ -502,14 +499,8 @@ class AnimationEngine
   
   # String representation
   def tostring()
-    return f"AnimationEngine(running={self.is_running}, animations={size(self.animations)}, width={self.width})"
+    return f"AnimationEngine(running={self.is_running})"
   end
 end
 
-# Main function to create the animation engine
-def create_engine(strip)
-  return animation.animation_engine(strip)
-end
-
-return {'animation_engine': AnimationEngine,
-        'create_engine': create_engine}
+return {'create_engine': AnimationEngine}

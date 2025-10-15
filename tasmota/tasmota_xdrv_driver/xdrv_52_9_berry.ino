@@ -68,7 +68,7 @@ void checkBeTop(void) {
   int32_t top = be_top(berry.vm);
   if (top != 0) {
     be_pop(berry.vm, top);   // TODO should not be there
-    AddLog(LOG_LEVEL_DEBUG, D_LOG_BERRY "Error be_top is non zero=%d", top);
+    AddLog(LOG_LEVEL_DEBUG, D_LOG_BERRY "Warning be_top is non zero=%d", top);
   }
 }
 
@@ -523,7 +523,7 @@ void CmndBrRun(void) {
     be_pop(berry.vm, 1);
   } else {
     Response_P(PSTR("{\"" D_PRFX_BR "\":\"[%s] %s\"}"), EscapeJSONString(be_tostring(berry.vm, -2)).c_str(), EscapeJSONString(be_tostring(berry.vm, -1)).c_str());
-    be_pop(berry.vm, 2);
+    be_pop(berry.vm, 3);
   }
 
   checkBeTop();
