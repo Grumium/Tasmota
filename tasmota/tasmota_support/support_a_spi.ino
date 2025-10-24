@@ -11,6 +11,18 @@
  * Basic SPI routines supporting two busses
 \*********************************************************************************************/
 
+#if defined(ESP32) && defined(USE_CORES3)
+// M5Stack CoreS3: MISO Pin also used as Display DC
+// #include <soc/gpio_reg.h>      // GPIO_ENABLE*_W1T*_REG
+#include <rom/gpio.h>           // gpio_matrix_out(), gpio_matrix_in()
+#define FSPIQ_IN_IDX 102       // SPI MISO signal index for ESP32-S3 <soc/gpio_sig_map.h>
+
+static int8_t miso_pin = -1;  // Cached for performance
+
+void SpiDcMisoSetDC();
+void SpiDcMisoSetMISO();
+#endif  // USE_CORES3
+
 SPIClass *SpiBegin(uint32 bus = 1);
 SPIClass *SpiBegin(uint32 bus) {
   SPIClass *spi;
@@ -20,7 +32,12 @@ SPIClass *SpiBegin(uint32 bus) {
 #ifdef ESP8266
       spi->begin();
 #endif // ESP8266
-#ifdef ESP32      
+#ifdef ESP32
+#ifdef USE_CORES3
+      if (PinUsed(GPIO_SPI_MISO)) {
+        miso_pin = Pin(GPIO_SPI_MISO);
+      }
+#endif
       spi->begin(Pin(GPIO_SPI_CLK), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_MOSI), -1);
 #endif  // ESP32
       return spi;
@@ -75,3 +92,25 @@ void AddLogSpi(uint32_t hardware, int clk, int mosi, int miso) {
   }
 #endif // FIRMWARE_MINIMAL
 }
+
+#if defined(ESP32) && defined(USE_CORES3)
+/*******************************************************************************************\
+ * Multiplexed MISO/DC Pin Support (M5Stack CoreS3)
+\*******************************************************************************************/
+void SpiDcMisoSetDC() {
+  if (miso_pin < 0) return;
+  // Enable OUTPUT for DC (use ENABLE1 for GPIO >= 32)
+  //*(volatile uint32_t*)GPIO_ENABLE1_W1TS_REG = 1u << (miso_pin & 31); // faster but unnecessary
+  // Disconnect GPIO from SPI
+  pinMode(miso_pin, OUTPUT); 
+}
+
+void SpiDcMisoSetMISO() {
+  if (miso_pin < 0) return;
+  // Disable OUTPUT (use ENABLE1 for GPIO >= 32)
+  //*(volatile uint32_t*)GPIO_ENABLE1_W1TC_REG = 1u << (miso_pin & 31); // faster but unnecessary
+  pinMode(miso_pin, INPUT);
+  // Reconnect pin to hardware SPI MISO
+  gpio_matrix_in(miso_pin, FSPIQ_IN_IDX, false);
+}
+#endif  // USE_CORES3
