@@ -43,8 +43,19 @@
 #define SPI_BEGIN_TRANSACTION if (spi_nr <= 2) beginTransaction(spiSettings);
 #define SPI_END_TRANSACTION if (spi_nr <= 2) endTransaction();
 
-#define SPI_CS_LOW if (spi_cs >= 0) GPIO_CLR_SLOW(spi_cs);
-#define SPI_CS_HIGH if (spi_cs >= 0) GPIO_SET_SLOW(spi_cs);
+#if defined(ESP32) && defined(USE_CORES3)
+// DC/MISO pin switching on CoreS3
+// :H,ILI9342,320,240,16,SPI,1,3,36,37,35,-1,-1,35,40
+  extern void SpiDcMisoSetDC();
+  extern void SpiDcMisoSetMISO();
+  
+  #define SPI_CS_LOW if (spi_cs >= 0) { GPIO_CLR_SLOW(spi_cs); SpiDcMisoSetDC(); }
+  #define SPI_CS_HIGH if (spi_cs >= 0) { GPIO_SET_SLOW(spi_cs); SpiDcMisoSetMISO(); }
+#else
+  #define SPI_CS_LOW if (spi_cs >= 0) GPIO_CLR_SLOW(spi_cs);
+  #define SPI_CS_HIGH if (spi_cs >= 0) GPIO_SET_SLOW(spi_cs);
+#endif
+
 #define SPI_DC_LOW if (spi_dc >= 0) GPIO_CLR_SLOW(spi_dc);
 #define SPI_DC_HIGH if (spi_dc >= 0) GPIO_SET_SLOW(spi_dc);
 
