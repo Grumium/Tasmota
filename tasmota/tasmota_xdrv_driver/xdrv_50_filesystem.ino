@@ -201,7 +201,7 @@ void UfsCheckSDCardInit(void) {
     SPI.begin();
 #endif // ESP8266
 #ifdef ESP32
-    SPI.begin(Pin(GPIO_SPI_CLK), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_MOSI), -1);
+    SpiBegin(1); // use support_a_spi.ino
 #endif // ESP32
 
     if (SD.begin(cs)) {
