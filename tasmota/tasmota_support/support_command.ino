@@ -991,7 +991,7 @@ void CmndStatus(void)
                           , ESP.getSdkVersion(),
                           ESP.getCpuFreqMHz(), GetDeviceHardwareRevision().c_str(),
 #ifdef CONFIG_ESP_WIFI_REMOTE_ENABLED
-                          GetHostedMCU().c_str(), GetHostedMCUFwVersion().c_str(),
+                          GetHostedMCU().c_str(), GetHostedFwVersion(1).c_str(),
 #endif  // CONFIG_ESP_WIFI_REMOTE_ENABLED
                           GetStatistics().c_str());
     CmndStatusResponse(2);
@@ -1035,7 +1035,7 @@ void CmndStatus(void)
                           ESP_getFlashChipSize()/1024, ESP.getFlashChipRealSize()/1024
 #endif // ESP8266
                           , ESP_getFlashChipId()
-                          , ESP.getFlashChipSpeed()/1000000);
+                          , ESP_getFlashChipSpeed()/1000000);
     ResponseAppendFeatures();
     XsnsDriverState();
     ResponseAppend_P(PSTR(",\"Sensors\":"));
@@ -2972,7 +2972,11 @@ void CmndI2cDriver(void)
 {
   if (XdrvMailbox.index < MAX_I2C_DRIVERS) {
     if (XdrvMailbox.payload >= 0) {
-      bitWrite(Settings->i2c_drivers[XdrvMailbox.index / 32], XdrvMailbox.index % 32, XdrvMailbox.payload &1);
+      if (XdrvMailbox.index < 96) {
+        bitWrite(Settings->i2c_drivers[XdrvMailbox.index / 32], XdrvMailbox.index % 32, XdrvMailbox.payload &1);
+      } else {
+        bitWrite(Settings->i2c_drivers2[(XdrvMailbox.index / 32) -3], XdrvMailbox.index % 32, XdrvMailbox.payload &1);
+      }
       TasmotaGlobal.restart_flag = 2;
     }
   }

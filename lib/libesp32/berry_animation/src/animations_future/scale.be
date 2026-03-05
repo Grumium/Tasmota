@@ -5,7 +5,6 @@
 
 import "./core/param_encoder" as encode_constraints
 
-#@ solidify:ScaleAnimation,weak
 class ScaleAnimation : animation.animation
   # Non-parameter instance variables only
   var scale_phase        # Current phase for animated scaling
@@ -14,7 +13,7 @@ class ScaleAnimation : animation.animation
   var start_time         # Animation start time
   
   # Parameter definitions following parameterized class specification
-  static var PARAMS = encode_constraints({
+  static var PARAMS = animation.enc_params({
     "source_animation": {"type": "instance", "default": nil},
     "scale_factor": {"min": 1, "max": 255, "default": 128},
     "scale_speed": {"min": 0, "max": 255, "default": 0},
@@ -37,7 +36,7 @@ class ScaleAnimation : animation.animation
   
   # Initialize frame buffers based on current strip length
   def _initialize_buffers()
-    var current_strip_length = self.engine.get_strip_length()
+    var current_strip_length = self.engine.strip_length
     self.source_frame = animation.frame_buffer(current_strip_length)
     self.current_colors = []
     self.current_colors.resize(current_strip_length)
@@ -52,7 +51,7 @@ class ScaleAnimation : animation.animation
   
   # Start/restart the animation
   def start(time_ms)
-    # Call parent start first (handles ValueProvider propagation)
+    # Call parent start first (handles value_provider propagation)
     super(self).start(time_ms)
     
     # Reset scale phase for animated modes
@@ -69,9 +68,7 @@ class ScaleAnimation : animation.animation
   
   # Update animation state
   def update(time_ms)
-    if !super(self).update(time_ms)
-      return false
-    end
+    super(self).update(time_ms)
 
     # Cache parameter values for performance
     var current_scale_speed = self.scale_speed
@@ -98,8 +95,6 @@ class ScaleAnimation : animation.animation
     
     # Calculate scaled colors
     self._calculate_scale()
-    
-    return true
   end
   
   # Calculate current scale factor based on mode
@@ -141,7 +136,7 @@ class ScaleAnimation : animation.animation
   # Calculate scaled colors for all pixels
   def _calculate_scale()
     # Get current strip length from engine
-    var current_strip_length = self.engine.get_strip_length()
+    var current_strip_length = self.engine.strip_length
     
     # Ensure buffers are properly sized
     if size(self.current_colors) != current_strip_length
@@ -235,17 +230,9 @@ class ScaleAnimation : animation.animation
   end
   
   # Render scale to frame buffer
-  def render(frame, time_ms)
-    if frame == nil
-      return false
-    end
-    
-    # Auto-fix time_ms and start_time
-    time_ms = self._fix_time_ms(time_ms)
-    
-    var current_strip_length = self.engine.get_strip_length()
+  def render(frame, time_ms, strip_length)
     var i = 0
-    while i < current_strip_length
+    while i < strip_length
       if i < frame.width
         frame.set_pixel_color(i, self.current_colors[i])
       end
@@ -253,16 +240,6 @@ class ScaleAnimation : animation.animation
     end
     
     return true
-  end
-  
-  # String representation
-  def tostring()
-    var mode_names = ["static", "oscillate", "grow", "shrink"]
-    var current_scale_mode = self.scale_mode
-    var current_scale_factor = self.scale_factor
-    var current_scale_speed = self.scale_speed
-    var mode_name = mode_names[current_scale_mode] != nil ? mode_names[current_scale_mode] : "unknown"
-    return f"ScaleAnimation({mode_name}, factor={current_scale_factor}, speed={current_scale_speed})"
   end
 end
 

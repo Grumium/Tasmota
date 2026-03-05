@@ -100,7 +100,7 @@ void (* const MqttCommand[])(void) PROGMEM = {
 struct MQTT {
   uint16_t connect_count = 0;            // MQTT re-connect count
   uint16_t retry_counter = 1;            // MQTT connection retry counter
-  uint16_t retry_counter_delay = 1;      // MQTT retry counter multiplier
+  uint16_t retry_counter_multiplier = 1; // MQTT retry counter multiplier
   uint8_t initial_connection_state = 2;  // MQTT connection messages state
   bool connected = false;                // MQTT virtual connection status
   bool allowed = false;                  // MQTT enabled and parameters valid
@@ -1000,10 +1000,8 @@ void MqttDisconnected(int state) {
   */
   Mqtt.connected = false;
 
-  Mqtt.retry_counter = Settings->mqtt_retry * Mqtt.retry_counter_delay;
-  if ((Settings->mqtt_retry * Mqtt.retry_counter_delay) < 120) {
-    Mqtt.retry_counter_delay++;
-  }
+  Mqtt.retry_counter = Settings->mqtt_retry * Mqtt.retry_counter_multiplier;
+  if (Mqtt.retry_counter < 120) { Mqtt.retry_counter_multiplier++; }
 
   if (MqttClient.connected()) {
     MqttClient.disconnect();
@@ -1023,7 +1021,7 @@ void MqttConnected(void) {
     AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_MQTT D_CONNECTED));
     Mqtt.connected = true;
     Mqtt.retry_counter = 0;
-    Mqtt.retry_counter_delay = 1;
+    Mqtt.retry_counter_multiplier = 1;
     Mqtt.connect_count++;
 
     GetTopic_P(stopic, TELE, TasmotaGlobal.mqtt_topic, S_LWT);
@@ -1112,6 +1110,9 @@ void MqttConnected(void) {
 }
 
 void MqttReconnect(void) {
+  if (!strlen(TasmotaGlobal.mqtt_client)) {  // Do it here as it needs the MAC address from a possible hosted MCU available after WiFi connection
+    Format(TasmotaGlobal.mqtt_client, SettingsText(SET_MQTT_CLIENT), sizeof(TasmotaGlobal.mqtt_client));
+  }
   Mqtt.allowed = Settings->flag.mqtt_enabled && (TasmotaGlobal.restart_flag == 0);  // SetOption3 - Enable MQTT, and don't connect if restart in process
   if (Mqtt.allowed) {
 #if defined(USE_MQTT_AZURE_DPS_SCOPEID) && defined(USE_MQTT_AZURE_DPS_PRESHAREDKEY)
@@ -1144,7 +1145,7 @@ void MqttReconnect(void) {
 #endif  // USE_EMULATION
 
   Mqtt.connected = false;
-  Mqtt.retry_counter = Settings->mqtt_retry * Mqtt.retry_counter_delay;
+  Mqtt.retry_counter = Settings->mqtt_retry * Mqtt.retry_counter_multiplier;
   TasmotaGlobal.global_state.mqtt_down = 1;
 
 #ifdef FIRMWARE_MINIMAL
@@ -2049,14 +2050,7 @@ void CmndTlsDump(void) {
 
 #define WEB_HANDLE_MQTT "mq"
 
-const char S_CONFIGURE_MQTT[] PROGMEM = D_CONFIGURE_MQTT;
-
-const char HTTP_BTN_MENU_MQTT[] PROGMEM =
-  "<p></p><form action='" WEB_HANDLE_MQTT "' method='get'><button>" D_CONFIGURE_MQTT "</button></form>";
-
 const char HTTP_FORM_MQTT1[] PROGMEM =
-  "<fieldset><legend><b>&nbsp;" D_MQTT_PARAMETERS "&nbsp;</b></legend>"
-  "<form method='get' action='" WEB_HANDLE_MQTT "'>"
   "<p><b>" D_HOST "</b> (" MQTT_HOST ")<br><input id='mh' placeholder=\"" MQTT_HOST "\" value=\"%s\"></p>"
   "<p><b>" D_PORT "</b> (" STR(MQTT_PORT) ")<br><input id='ml' placeholder='" STR(MQTT_PORT) "' value='%d'></p>"
 #ifdef USE_MQTT_TLS
@@ -2085,6 +2079,8 @@ void HandleMqttConfiguration(void)
 
   WSContentStart_P(PSTR(D_CONFIGURE_MQTT));
   WSContentSendStyle();
+  WSContentSend_P(HTTP_FIELDSET_LEGEND, PSTR(D_MQTT_PARAMETERS));
+  WSContentSend_P(HTTP_FORM_GET_ACTION, PSTR(WEB_HANDLE_MQTT));
   WSContentSend_P(HTTP_FORM_MQTT1,
     SettingsTextEscaped(SET_MQTT_HOST).c_str(),
     Settings->mqtt_port,
@@ -2135,7 +2131,7 @@ bool Xdrv02(uint32_t function)
 #ifdef USE_WEBSERVER
 #ifndef FIRMWARE_MINIMAL    // not needed in minimal/safeboot because of disabled feature and Settings are not saved anyways
       case FUNC_WEB_ADD_BUTTON:
-        WSContentSend_P(HTTP_BTN_MENU_MQTT);
+        WSContentSend_P(HTTP_FORM_BUTTON, PSTR(WEB_HANDLE_MQTT), PSTR(D_CONFIGURE_MQTT));
         break;
       case FUNC_WEB_ADD_HANDLER:
         WebServer_on(PSTR("/" WEB_HANDLE_MQTT), HandleMqttConfiguration);

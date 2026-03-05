@@ -36,9 +36,9 @@ While fallback or downgrading is common practice it was never supported due to S
 
 This release will be supported from ESP8266/Arduino library Core version **2.7.8** due to reported security and stability issues on previous Core version. This will also support gzipped binaries.
 
-This release will be supported from ESP32/Arduino library Core version **v3.1.4**.
+This release will be supported from ESP32/Arduino library Core version **v3.1.10**.
 
-Support of ESP8266 Core versions before 2.7.8 and ESP32 Core versions before v3.1.4 have been removed.
+Support of ESP8266 Core versions before 2.7.8 and ESP32 Core versions before v3.1.10 have been removed.
 
 ## Initial configuration tools
 
@@ -71,12 +71,12 @@ Latest released binaries can be downloaded from
 - http://ota.tasmota.com/tasmota/release
 
 Historical binaries can be downloaded from
-- http://ota.tasmota.com/tasmota/release-15.1.0
+- http://ota.tasmota.com/tasmota/release-15.2.0
 
 The latter links can be used for OTA upgrades too like ``OtaUrl http://ota.tasmota.com/tasmota/release/tasmota.bin.gz``
 
 ### ESP32, ESP32-C2, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-P4, ESP32-S2 and ESP32-S3 based
-The following binary downloads have been compiled with ESP32/Arduino library core version **v3.1.4**.
+The following binary downloads have been compiled with ESP32/Arduino library core version **v3.1.10**.
 
 - **tasmota32.bin** = The Tasmota version with most drivers including additional sensors and KNX for 4M+ flash.  **RECOMMENDED RELEASE BINARY**
 - **tasmota32solo1.bin** = The Tasmota version with most drivers including additional sensors and KNX for single core ESP32 and 4M+ flash.
@@ -102,7 +102,7 @@ Latest released binaries can be downloaded from
 - https://ota.tasmota.com/tasmota32/release
 
 Historical binaries can be downloaded from
-- https://ota.tasmota.com/tasmota32/release-15.1.0
+- https://ota.tasmota.com/tasmota32/release-15.2.0
 
 The latter links can be used for OTA upgrades too like ``OtaUrl https://ota.tasmota.com/tasmota32/release/tasmota32.bin``
 
@@ -112,20 +112,24 @@ The latter links can be used for OTA upgrades too like ``OtaUrl https://ota.tasm
 
 [Complete list](BUILDS.md) of available feature and sensors.
 
-## Changelog v15.1.0.1
+## Changelog v15.3.0.1
 ### Added
-- TLS enabled ECDSA by default for ESP8266 [#24009](https://github.com/arendst/Tasmota/issues/24009)
-- Berry add `cb.free_cb` for extension manager [#24014](https://github.com/arendst/Tasmota/issues/24014)
-
-### Breaking Changed
+- Support for Sensirion SCD42 and SCD43 CO2 sensor
+- Support for Sensirion STCC4 CO2 sensor
+- I2S full duplex, auto rx sample rate [#24469](https://github.com/arendst/Tasmota/issues/24469)
+- Sen5x power on delay of 60ms [#24452](https://github.com/arendst/Tasmota/issues/24452)
 
 ### Changed
-- Refactored library UDisplay [#24007](https://github.com/arendst/Tasmota/issues/24007)
+- Sensirion Core library from v0.6.0 to v0.7.2
+- LVGL library from v9.4.0 to v9.5.0 [#24470](https://github.com/arendst/Tasmota/issues/24470)
+- SHT1x software reset I2C bus after initial (un)detection
+- Matter improved parameters handling [#24471](https://github.com/arendst/Tasmota/issues/24471)
 
 ### Fixed
-- TLS fix ECDSA and add `SetOption165 1` to enable ECDSA in addition to RSA [#24000](https://github.com/arendst/Tasmota/issues/24000)
-- Extension Manager exception when `OtaUrl` is not defined or invalid
-- Extension Manager Light Theme support and Extensions input field control
-- HASPmota exception in `cpicker` (colorwheel) [#24010](https://github.com/arendst/Tasmota/issues/24010)
+- Do not free BT memory when in use [#24480](https://github.com/arendst/Tasmota/issues/24480)
+- Berry avoid `tasmota.wifi()` returning bad values when wifi is turned off [#24505](https://github.com/arendst/Tasmota/issues/24505)
+- Don't send extraneous `0\r\n\r\n` with non-chunked HTTP/1.0 [#24518](https://github.com/arendst/Tasmota/issues/24518)
+- File upload improvements: `/ufsu` api mode, no interrupts disabling, cleaner confirmation page [#24521](https://github.com/arendst/Tasmota/issues/24521)
 
 ### Removed
+- Berry `tasmota.urlbecload()` superseded by Extension Manager [#24493](https://github.com/arendst/Tasmota/issues/24493)
