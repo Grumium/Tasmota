@@ -21,6 +21,7 @@
 #ifdef USE_OPC
 #define XSNS_124                  124
 #define D_CMND_OPC "OPC"
+#define OPC_MAX_SENSORS           MAX_SPI  // Max 1 on ESP8266, 2 on ESP32
 
 #define FORMAT_PM_DIA(val_um100, buffer)                        \
   do {                                                          \
@@ -52,10 +53,6 @@ typedef struct {
   float pm_a, pm_b, pm_c;
   uint16_t rej_cnt_gli, rej_cnt_lon, rej_cnt_rat, rej_cnt_oor, fan_rev_cnt, las_status;
 } hist_n3data_t;
-
-hist_n2data_t *hist_n2 = nullptr;
-hist_n3data_t *hist_n3 = nullptr;
-
 
 typedef enum {
   OPC_WRITE_LOFF,
@@ -91,20 +88,6 @@ typedef enum {
   OPC_RESET        = 1 << 12  //4096
 } OPC_mode_bit_field_t;
 
-typedef struct {
-  void **ptr;
-  size_t size;
-} OPC_AllocInfo_t;
-
-// Lookup-Tabelle zur Allokation
-
-OPC_AllocInfo_t OPC_AllocTable[4] = {
-  { (void **)&hist_n2, sizeof(hist_n2data_t) },
-  { (void **)&hist_n3, sizeof(hist_n3data_t) },
-  { NULL, 0 }, // { (void **)&hist_r1, sizeof(hist_r1data_t) },
-  { NULL, 0 }  // (void **)&hist_r2, sizeof(hist_r2data_t) }
-};
-
 //const char kOPC_Codes[] PROGMEM = "OPC_CHK_STATUS|OPC_RESET|OPC_READ_PM|OPC_READ_HIST|OPC_READ_POWER|OPC_READ_FW|OPC_READ_SN|OPC_READ_INFO|OPC_WRITE_POWER";
 void OPCReadDataToStruct(OPC_CommandCodes_t cmd); // Todo: Change to boolean
 void OPCWriteControl(OPC_CommandCodes_t cmd);
@@ -135,9 +118,6 @@ const OPC_Defaults OPCCommand[] PROGMEM = {
   { 0xCF, {1, 1, 1, 1} },  // OPC_CHK_STATUS 
   { 0x06, {1, 1, 1, 1} }  // OPC_DO_RESET
 };
-
-//void* OPCReadTarget[sizeof(OPCCommand)];  
-void* OPCReadTarget[sizeof(OPCCommand) / sizeof(OPCCommand[0])];
 
 #ifdef USE_WEBSERVER
 #define WEB_HANDLE_OPC "s124"
@@ -174,6 +154,7 @@ struct OPC_T {
   uint16_t mode, setmode;     //
   uint8_t interval    = OPC_DEFAULT_INTERVAL ;
   uint8_t setinterval = OPC_DEFAULT_INTERVAL ;
+  int8_t  cs_pin      = -1;               // actual GPIO pin number of the active OPC_CS
   //uint8_t power;
   char types[20];
   //unsigned char data[61];
@@ -228,7 +209,14 @@ struct OPC_T {
     bool available;
     bool isFirst;
   } data;
-} OPC;
+  hist_n2data_t *hist_n2 = nullptr;  // per-sensor histogram buffer (N2)
+  hist_n3data_t *hist_n3 = nullptr;  // per-sensor histogram buffer (N3)
+};
+
+OPC_T opc[OPC_MAX_SENSORS];
+uint8_t opc_count = 0;   // number of detected OPC sensors
+uint8_t opc_idx   = 0;   // index of currently active sensor (set before every SPI call)
+#define OPC opc[opc_idx] // convenience alias – always refers to the active sensor
 
 const char* OPCReplaceDotWithUnderscore(const char* input) {
   static char buffer[FLOATSZ];
@@ -252,35 +240,47 @@ bool OPCAvailable(uint8_t cmd) {
 }
 
 void OPCPreInit(void) {
-  if (PinUsed(GPIO_OPC_CS) && (SPI_MOSI_MISO == TasmotaGlobal.spi_enabled)) {
-    pinMode(Pin(GPIO_OPC_CS), OUTPUT);
-    digitalWrite(Pin(GPIO_OPC_CS), 1);
-    OPC.setmode = 0x10;
-    OPC.mode    = 0;
-    //OPCReadTarget[OPC_READ_INFO]   = &OPC.msg.info;
-    //OPC.chk_status = false;
-    //OPC.mode &= ~OPC_INIT; // init to false
-    //OPC.available = false;
+  if (SPI_MOSI_MISO != TasmotaGlobal.spi_enabled) { return; }
+  for (uint32_t i = 0; i < OPC_MAX_SENSORS; i++) {
+    if (PinUsed(GPIO_OPC_CS, i)) {
+      opc_idx = opc_count;
+      OPC.cs_pin  = Pin(GPIO_OPC_CS, i);
+      OPC.setmode = 0x10;
+      OPC.mode    = 0;
+      pinMode(OPC.cs_pin, OUTPUT);
+      digitalWrite(OPC.cs_pin, HIGH);
+      opc_count++;
+    }
   }
+  if (opc_count > 0) {
+#ifdef ESP32
+    SPI.begin(Pin(GPIO_SPI_CLK), Pin(GPIO_SPI_MISO), Pin(GPIO_SPI_MOSI), -1);
+#else
+    SPI.begin();
+#endif
+    AddLog(LOG_LEVEL_INFO, PSTR("OPC: %d sensor(s) configured on SPI bus"), opc_count);
+  }
+  opc_idx = 0;
 }
 
 void OPCAllocateMem(uint32_t type) {
-
-  void **ptr = OPC_AllocTable[type].ptr;
-  size_t size = OPC_AllocTable[type].size;
-
-  if (ptr && *ptr) { 
-      free(*ptr);
-      *ptr = nullptr;
-      DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("Free: %u"), size);
+  void  **ptr;
+  size_t  size;
+  switch (type) {
+    case 0: ptr = (void**)&OPC.hist_n2; size = sizeof(hist_n2data_t); break;
+    case 1: ptr = (void**)&OPC.hist_n3; size = sizeof(hist_n3data_t); break;
+    default: return;
   }
-  
-  OPCReadTarget[OPC_READ_HIST] = *ptr = calloc(1, size);
+  if (ptr && *ptr) {
+    free(*ptr);
+    *ptr = nullptr;
+    DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("Free: %u"), size);
+  }
+  *ptr = calloc(1, size);
   if (!*ptr) {
-      AddLog(LOG_LEVEL_ERROR, PSTR("Memory allocation failed %u"), size);
-      return;
-  } else {   DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("Alloc: %u"), size);}
-
+    AddLog(LOG_LEVEL_ERROR, PSTR("Memory allocation failed %u"), size);
+    return;
+  } else { DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("Alloc: %u"), size); }
 }
 
 bool OPCInit(void) {
@@ -302,7 +302,7 @@ bool OPCInit(void) {
       //str = GetTextIndexed(OPC.types, sizeof(OPC.types), OPC.type, kOPC_Types);
     AddLog(LOG_LEVEL_INFO, PSTR("Type search %s"), OPC.types);
     if (strstr((const char*)OPC.data.info, OPC.types) != NULL) {
-      AddLog(LOG_LEVEL_INFO, PSTR("%s: Found and initialized %s"), D_CMND_OPC, OPC.types);
+      AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d found and initialized %s"), D_CMND_OPC, opc_idx + 1, OPC.types);
       AddLog(LOG_LEVEL_INFO, PSTR("%s: %s"), D_CMND_OPC, OPC.data.info);
       OPC.mode |= (1 << i); // Set Bit i
       //AddLog(LOG_LEVEL_INFO, PSTR("%s: mode is: %i  and lowest bit is %i"), D_CMND_OPC, i, (__builtin_ctz(OPC.mode & 0x0F)));
@@ -310,10 +310,7 @@ bool OPCInit(void) {
       //uint8_t len = OPCCommand[OPC_READ_HIST].val[i];
       //OPCAllocateMem(i);  // Speicher für Histogramm-Struktur allokieren
 
-      OPCReadTarget[OPC_READ_PM]     = &OPC.data.pm;
-      OPCReadTarget[OPC_READ_CONFIG]     = &OPC.config;
-      OPCReadTarget[OPC_READ_STATUS]     = &OPC.status;
-      //if (*OPC_AllocTable[i].ptr == nullptr) {
+      //if (no hist ptr for this type) {
       //  AddLog(LOG_LEVEL_ERROR, PSTR("OPC: Memory allocation failed for type %u"), i);
       //  return false;
       //}
@@ -328,7 +325,9 @@ static void OPCProcessMeasurements(void) {
   if (!OPC.data.available) { return; }
   if (OPC.mode & OPC_PMHIST) {
     const uint32_t active = __builtin_ctz(OPC.mode & 0x0F);
-    void *hist_ptr        = *OPC_AllocTable[active].ptr;
+    void *hist_ptr = (active == 0) ? (void*)OPC.hist_n2
+                   : (active == 1) ? (void*)OPC.hist_n3
+                   : nullptr;
     if (!hist_ptr) { return; }
     // ── Histogram mode ───────────────────────────────────────────────────────
     if ((1U << active) == OPC_TYPE_N2) {
@@ -395,7 +394,8 @@ static void OPCProcessMeasurements(void) {
 }
 
 void OPCLoop(void) {
-  if (PinUsed(GPIO_OPC_CS) && (SPI_MOSI_MISO == TasmotaGlobal.spi_enabled)) {
+  if (SPI_MOSI_MISO != TasmotaGlobal.spi_enabled) { return; }
+  for (opc_idx = 0; opc_idx < opc_count; opc_idx++) {
     uint16_t diff = (OPC.setmode ^ OPC.mode); //ignore the lowest four bits, these are for the sensor types
 
     DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: setmode=0x%03X, mode=0x%03X, diff=0x%03X"), 
@@ -416,7 +416,7 @@ void OPCLoop(void) {
         FORMAT_PM_DIA(OPC.config.pm_dia_b, OPC.data.pm.dia_b);
         FORMAT_PM_DIA(OPC.config.pm_dia_c, OPC.data.pm.dia_c);
         MqttPublishSensor();
-        return;
+        continue;
       }
     }
     if (diff & OPC_STATUS) {
@@ -426,7 +426,7 @@ void OPCLoop(void) {
         OPCReadDataToStruct(OPC_READ_STATUS); // if boolean, then successful change mode.
         OPC.mode ^= OPC_STATUS; 
         MqttPublishSensor();
-        return;
+        continue;
       }
     }
 
@@ -436,28 +436,28 @@ void OPCLoop(void) {
     if (diff & OPC_FONOFF) {
       OPCWriteControl((OPC.setmode & OPC_FONOFF) ? OPC_WRITE_FON : OPC_WRITE_FOFF);
       OPC.mode ^= OPC_FONOFF;
-      return;
+      continue;
     } else if (diff & OPC_LONOFF) {
       OPCWriteControl((OPC.setmode & OPC_LONOFF) ? OPC_WRITE_LON : OPC_WRITE_LOFF);
       OPC.mode ^= OPC_LONOFF;
-      return;
+      continue;
     } else if (diff & OPC_LGAIN) {
       OPCWriteControl(OPC_WRITE_LGAIN);
       OPC.setmode &= ~OPC_LGAIN;
       OPC.setmode ^= OPC_STATUS;
-      return;
+      continue;
     } else if (diff & OPC_HGAIN) {
       OPCWriteControl(OPC_WRITE_HGAIN);
       OPC.setmode &= ~OPC_HGAIN;
       OPC.setmode ^= OPC_STATUS;
-      return;
+      continue;
     } else if (diff & OPC_RESET) {
       unsigned char ret;
       OPCHandleData(0x06, 0xF3, 1, &ret);
       AddLog(LOG_LEVEL_INFO, PSTR("%s: returned 0x%02X"), D_CMND_OPC, ret);
       OPC.setmode ^= OPC_RESET;
       OPC.mode &= ~0x0F;
-      return;
+      continue;
     }   
     //}
 
@@ -470,7 +470,7 @@ void OPCLoop(void) {
           OPC.setmode ^= OPC_CONFIG;
           OPC.setmode ^= OPC_STATUS;
         }
-        return;
+        continue;
       }
       // READ INTERVAL
       if (diff & OPC_PMHIST) {
@@ -509,7 +509,20 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
     AddLog(LOG_LEVEL_ERROR, PSTR("%s: Invalid read command %d (len=%u)"), D_CMND_OPC, cmd, len);
     return;
   }
-  void* target = OPCReadTarget[cmd];
+  void* target = nullptr;
+  switch (cmd) {
+    case OPC_READ_PM:     target = &OPC.data.pm;    break;
+    case OPC_READ_CONFIG: target = &OPC.config;     break;
+    case OPC_READ_STATUS: target = &OPC.status;     break;
+    case OPC_READ_HIST: {
+      uint32_t active = __builtin_ctz(OPC.mode & 0x0F);
+      target = (active == 0) ? (void*)OPC.hist_n2
+             : (active == 1) ? (void*)OPC.hist_n3
+             : nullptr;
+      break;
+    }
+    default: break;
+  }
   if (!target) {
     AddLog(LOG_LEVEL_ERROR, PSTR("%s: Invalid target for command %d (len=%u)"), D_CMND_OPC, cmd, len);
     return;
@@ -550,11 +563,11 @@ bool CheckCRC(unsigned char data[], size_t length) {
 
 void OPCSpiEnable(void) {
   SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE1));  // Set up SPI at 400 kHz, MSB first, Capture at rising edge
-  digitalWrite(Pin(GPIO_OPC_CS), 0);
+  digitalWrite(OPC.cs_pin, 0);
 }
 
 void OPCSpiDisable(void) {
-  digitalWrite(Pin(GPIO_OPC_CS), 1);
+  digitalWrite(OPC.cs_pin, 1);
   SPI.endTransaction();     
 }
 
@@ -570,10 +583,10 @@ class SpiGuard {
 public:
   explicit SpiGuard(uint32_t clk_hz = 400'000UL) {
     SPI.beginTransaction(SPISettings(clk_hz, MSBFIRST, SPI_MODE1));
-    digitalWrite(Pin(GPIO_OPC_CS), LOW);     // CS aktiv (0)
+    digitalWrite(OPC.cs_pin, LOW);           // CS aktiv (0)
   }
   ~SpiGuard() {
-    digitalWrite(Pin(GPIO_OPC_CS), HIGH);    // CS inaktiv (1)
+    digitalWrite(OPC.cs_pin, HIGH);          // CS inaktiv (1)
     SPI.endTransaction();
   }
   // Non-copyable – vermeidet versehentliches Kopieren
@@ -637,8 +650,25 @@ void OPCWriteControl(OPC_CommandCodes_t cmd) {
 bool OPCCmd(void)
 {
   if (XdrvMailbox.data_len > 0) {
-    OPCSelectMode(XdrvMailbox.payload);
-    Response_P(S_JSON_OPC_COMMAND_NVALUE, XdrvMailbox.command, XdrvMailbox.payload);
+    int16_t command = XdrvMailbox.payload;
+    uint8_t target  = 0;  // 0 = default (OPC-1)
+
+    // "SENSOR124 2 5" → target=2, command=5  |  "SENSOR124 5" → target=0, command=5
+    char *space = strchr(XdrvMailbox.data, ' ');
+    if (space) {
+      target  = atoi(XdrvMailbox.data);   // 1-based OPC index
+      command = atoi(space + 1);
+    }
+
+    if (target > 0 && target <= opc_count) {
+      opc_idx = target - 1;
+      OPCSelectMode(command);
+    } else {
+      opc_idx = 0;
+      OPCSelectMode(command);
+    }
+    opc_idx = 0;
+    Response_P(S_JSON_OPC_COMMAND_NVALUE, XdrvMailbox.command, command);
   }
   return true;
 }
@@ -696,8 +726,16 @@ void OPCSelectMode(uint16_t mode)
 }
 
 void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
+  for (opc_idx = 0; opc_idx < opc_count; opc_idx++) {
+  // JSON-Key: "OPC" bei 1 Sensor, "OPC-1"/"OPC-2" bei mehreren
+  char opc_key[8];
+  if (opc_count > 1) {
+    snprintf_P(opc_key, sizeof(opc_key), PSTR("%s%c%d"), D_CMND_OPC, IndexSeparator(), opc_idx + 1);
+  } else {
+    strlcpy(opc_key, D_CMND_OPC, sizeof(opc_key));
+  }
   if (json) {
-    ResponseAppend_P(PSTR(",\"%s\":{\"Mode\":%i"), D_CMND_OPC, OPC.mode);
+    ResponseAppend_P(PSTR(",\"%s\":{\"Mode\":%i"), opc_key, OPC.mode);
     ResponseAppend_P(PSTR(",\"First_Publish\":%d"), OPC.data.isFirst);
     if ((OPC.mode & 0x0F) && (OPC.mode & OPC_STATUS))
     {
@@ -758,20 +796,12 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
         ResponseAppend_P(PSTR("\"pvp\":%u,"), OPC.config.pvp);
         ResponseAppend_P(PSTR("\"bin_weighting_index\":%u}"), OPC.config.bin_weighting_index);
 
-        // Ende des Config-Objects
-        //ResponseAppend_P(PSTR("}"));
         if (OPC.mode & OPC_CONFIG) {
           DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: RESET CONFIG FLAG"));
           OPC.mode ^= OPC_CONFIG; 
         }
-        
     }
 
-
-  } else {
-#ifdef USE_WEBSERVER
-    WSContentSend_P(PSTR("{s}%s Mode{m}0x%02X{e}"), D_CMND_OPC, OPC.mode);
-#endif
   }
   DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC.data.isFirst= %d"), OPC.data.isFirst);
 
@@ -779,24 +809,20 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     OPC.data.isFirst = false;  // consume – avoids duplicate display until next packet
   }
 
-
   if ((!(OPC.mode & 0x0F))            // no OPC detected
       || (OPC.mode & OPC_OVERRIDE)
       || (!(OPC.mode & OPC_FONOFF))
       || (!(OPC.mode & OPC_LONOFF)))
       {
       if (json) { 
-        //AddLog(LOG_LEVEL_INFO, PSTR("OPC: Look no further"));
         ResponseJsonEnd(); 
       }
-      return;
+      continue;  // next sensor, not return
   }
   
   char types[11];
   strlcpy(types, OPC.types, sizeof(types));
 
-
-    
   if (json) {
     ResponseAppend_P(PSTR(",\"Gain\":%u"), OPC.status.gain);
     ResponseAppend_P(PSTR(",\"PM%s\":%1_f"), OPCReplaceDotWithUnderscore(OPC.data.pm.dia_a), &OPC.data.pm.a);
@@ -812,21 +838,152 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
       ResponseAppend_P(PSTR(",\"" D_JSON_AHUM "\":%4_f"), &OPC.data.abs_humi);
     }
     ResponseJsonEnd();
-#ifdef USE_WEBSERVER
-  } else {
-    WSContentSend_P(PSTR("{s}%s Gain{m}%u{e}"), D_CMND_OPC, OPC.status.gain);
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_a, &OPC.data.pm.a);
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_b, &OPC.data.pm.b);
-    WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, OPC.data.pm.dia_c, &OPC.data.pm.c);
-
-    if ((OPC.mode & OPC_PMHIST) && ((1U << __builtin_ctz(OPC.mode & 0x0F)) == OPC_TYPE_N3)) {
-      WSContentSend_PD(PSTR("{s}%s " D_FLOW_RATE "{m}%3_f " D_UNIT_LITER_PER_MINUTE "{e}"), D_CMND_OPC, &OPC.data.flow);
-      WSContentSend_PD(PSTR("{s}%s " D_JSON_PERIOD "{m}%2_f " D_UNIT_SECOND "{e}"),            D_CMND_OPC, &OPC.data.period);
-      WSContentSend_THD(D_CMND_OPC, OPC.data.temp, OPC.data.humi);
-      WSContentSend_PD(HTTP_SNS_F_ABS_HUM, D_CMND_OPC, 4, &OPC.data.abs_humi);
-    }
-#endif
   }
+  } // for opc_idx
+
+#ifdef USE_WEBSERVER
+  if (!json) {
+    #define OPC_AL "<td style='text-align:right'>"
+    bool rdy[OPC_MAX_SENSORS];
+    bool any_ready = false, any_n3h = false;
+    for (uint8_t i = 0; i < opc_count; i++) {
+      rdy[i] = (opc[i].mode & 0x0F) && !(opc[i].mode & OPC_OVERRIDE)
+            && (opc[i].mode & OPC_FONOFF) && (opc[i].mode & OPC_LONOFF);
+      if (rdy[i]) any_ready = true;
+      if (rdy[i] && (opc[i].mode & OPC_PMHIST)
+          && ((1U << __builtin_ctz(opc[i].mode & 0x0F)) == OPC_TYPE_N3))
+        any_n3h = true;
+    }
+
+    if (opc_count < 2) {
+      // Single sensor: standard vertical layout
+      WSContentSend_P(PSTR("{s}%s Mode{m}0x%02X{e}"), D_CMND_OPC, opc[0].mode);
+      if (rdy[0]) {
+        WSContentSend_P(PSTR("{s}%s Gain{m}%u{e}"), D_CMND_OPC, opc[0].status.gain);
+        WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, opc[0].data.pm.dia_a, &opc[0].data.pm.a);
+        WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, opc[0].data.pm.dia_b, &opc[0].data.pm.b);
+        WSContentSend_PD(HTTP_SNS_F_ENVIRONMENTAL_CONCENTRATION, D_CMND_OPC, opc[0].data.pm.dia_c, &opc[0].data.pm.c);
+        if (any_n3h) {
+          WSContentSend_PD(PSTR("{s}%s " D_FLOW_RATE "{m}%3_f " D_UNIT_LITER_PER_MINUTE "{e}"), D_CMND_OPC, &opc[0].data.flow);
+          WSContentSend_PD(PSTR("{s}%s " D_JSON_PERIOD "{m}%2_f " D_UNIT_SECOND "{e}"), D_CMND_OPC, &opc[0].data.period);
+          WSContentSend_THD(D_CMND_OPC, opc[0].data.temp, opc[0].data.humi);
+          WSContentSend_PD(HTTP_SNS_F_ABS_HUM, D_CMND_OPC, 4, &opc[0].data.abs_humi);
+        }
+      }
+    } else {
+      // Multi-sensor: transposed table (rows=metrics, columns=sensors)
+      bool n3h[OPC_MAX_SENSORS];
+      for (uint8_t i = 0; i < opc_count; i++) {
+        n3h[i] = rdy[i] && (opc[i].mode & OPC_PMHIST)
+              && ((1U << __builtin_ctz(opc[i].mode & 0x0F)) == OPC_TYPE_N3);
+      }
+
+      // Header
+      WSContentSend_P(PSTR("{s}" D_CMND_OPC "</th>"));
+      for (uint8_t i = 0; i < opc_count; i++) {
+        WSContentSend_P(PSTR("<td></td>" OPC_AL "%s%c%d</td>"),
+                        D_CMND_OPC, IndexSeparator(), i + 1);
+      }
+      WSContentSend_P(PSTR("{e}"));
+
+      // Mode
+      WSContentSend_P(PSTR("{s}Mode</th>"));
+      for (uint8_t i = 0; i < opc_count; i++) {
+        WSContentSend_P(PSTR("<td></td>" OPC_AL "0x%02X</td>"), opc[i].mode);
+      }
+      WSContentSend_P(PSTR("{e}"));
+
+      if (any_ready) {
+        // Gain
+        WSContentSend_P(PSTR("{s}Gain</th>"));
+        for (uint8_t i = 0; i < opc_count; i++) {
+          if (rdy[i]) WSContentSend_P(PSTR("<td></td>" OPC_AL "%u</td>"), opc[i].status.gain);
+          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+        }
+        WSContentSend_P(PSTR("{e}"));
+
+        // PM row labels from first ready sensor
+        const char *lbl_a = "A", *lbl_b = "B", *lbl_c = "C";
+        for (uint8_t i = 0; i < opc_count; i++) {
+          if (rdy[i]) {
+            lbl_a = opc[i].data.pm.dia_a;
+            lbl_b = opc[i].data.pm.dia_b;
+            lbl_c = opc[i].data.pm.dia_c;
+            break;
+          }
+        }
+
+        // PM A
+        WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_a);
+        for (uint8_t i = 0; i < opc_count; i++) {
+          if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.a);
+          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+        }
+        WSContentSend_P(PSTR("{e}"));
+
+        // PM B
+        WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_b);
+        for (uint8_t i = 0; i < opc_count; i++) {
+          if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.b);
+          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+        }
+        WSContentSend_P(PSTR("{e}"));
+
+        // PM C
+        WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_c);
+        for (uint8_t i = 0; i < opc_count; i++) {
+          if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.c);
+          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+        }
+        WSContentSend_P(PSTR("{e}"));
+
+        if (any_n3h) {
+          // Flow
+          WSContentSend_P(PSTR("{s}" D_FLOW_RATE "</th>"));
+          for (uint8_t i = 0; i < opc_count; i++) {
+            if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%3_f " D_UNIT_LITER_PER_MINUTE "</td>"), &opc[i].data.flow);
+            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          }
+          WSContentSend_P(PSTR("{e}"));
+
+          // Period
+          WSContentSend_P(PSTR("{s}" D_JSON_PERIOD "</th>"));
+          for (uint8_t i = 0; i < opc_count; i++) {
+            if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%2_f " D_UNIT_SECOND "</td>"), &opc[i].data.period);
+            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          }
+          WSContentSend_P(PSTR("{e}"));
+
+          // Temperature
+          WSContentSend_P(PSTR("{s}" D_TEMPERATURE "</th>"));
+          for (uint8_t i = 0; i < opc_count; i++) {
+            if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%*_f °%c</td>"),
+                          Settings->flag2.temperature_resolution, &opc[i].data.temp, TempUnit());
+            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          }
+          WSContentSend_P(PSTR("{e}"));
+
+          // Humidity
+          WSContentSend_P(PSTR("{s}" D_HUMIDITY "</th>"));
+          for (uint8_t i = 0; i < opc_count; i++) {
+            if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%*_f%%</td>"),
+                          Settings->flag2.humidity_resolution, &opc[i].data.humi);
+            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          }
+          WSContentSend_P(PSTR("{e}"));
+
+          // Absolute humidity
+          WSContentSend_P(PSTR("{s}" D_ABSOLUTE_HUMIDITY "</th>"));
+          for (uint8_t i = 0; i < opc_count; i++) {
+            if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%4_f " D_UNIT_GRAM_PER_CUBIC_METER "</td>"), &opc[i].data.abs_humi);
+            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          }
+          WSContentSend_P(PSTR("{e}"));
+        }
+      }
+    }
+  }
+#endif
 }
 
 bool Xsns124(uint32_t function) {

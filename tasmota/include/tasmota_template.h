@@ -654,7 +654,7 @@ const uint16_t kGpioNiceList[] PROGMEM = {
   AGPIO(GPIO_NRF24_DC),
 #endif
 #ifdef USE_OPC
-  AGPIO(GPIO_OPC_CS),                            // Alphasense OPC Chip Select
+  AGPIO(GPIO_OPC_CS) + AGMAX(MAX_SPI),           // Alphasense OPC Chip Select
 #endif
 #ifdef USE_RC522
   AGPIO(GPIO_RC522_CS),                          // RC522 Rfid Chip Select
