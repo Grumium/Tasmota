@@ -6,27 +6,27 @@ Using command ``I2cDriver`` individual drivers can be enabled or disabled at run
 ## Supported I2C devices
 The following table lists the supported I2C devices
 
-Index | Define              | Driver   | Device   | Address(es) | Bus2 | Description
-------|---------------------|----------|----------|-------------|------|-----------------------------------------------
-   1  | USE_PCA9685         | xdrv_15  | PCA9685  | 0x40 - 0x47 |      | 16-channel 12-bit pwm driver
-   1  | USE_PCA9685_V2      | xdrv_15  | PCA9685  | 0x40 - 0x47 |      | 16-channel 12-bit pwm driver
-   2  | USE_PCF8574         | xdrv_28  | PCF8574  | 0x20 - 0x26 |      | 8-bit I/O expander (address range overridable)
-   2  | USE_PCF8574         | xdrv_28  | PCF8574A | 0x39 - 0x3F |      | 8-bit I/O expander (address range overridable)
-   3  | USE_DISPLAY_LCD     | xdsp_01  |          | 0x27, 0x3F  |      | LCD display
-   4  | REMOVED             |          |          |             |      | USE_DISPLAY_SSD1306 - REMOVED
-   5  | USE_DISPLAY_MATRIX  | xdsp_03  | HT16K33  | 0x70 - 0x77 |      | 8x8 led matrix
-   6  | REMOVED             |          | SH1106   | 0x3C - 0x3D |      | USE_DISPLAY_SH1106 - REMOVED
-   7  | USE_ADE7953         | xnrg_07  | ADE7953  | 0x38        |      | Energy monitor
-   8  | USE_SHT             | xsns_07  | SHT1X    | Any         |      | Temperature and Humidity sensor
-   9  | USE_HTU             | xsns_08  | HTU21    | 0x40        | Yes  | Temperature and Humidity sensor
-   9  | USE_HTU             | xsns_08  | SI7013   | 0x40        | Yes  | Temperature and Humidity sensor
-   9  | USE_HTU             | xsns_08  | SI7020   | 0x40        | Yes  | Temperature and Humidity sensor
-   9  | USE_HTU             | xsns_08  | SI7021   | 0x40        | Yes  | Temperature and Humidity sensor
-  10  | USE_BMP             | xsns_09  | BMP085   | 0x76 - 0x77 | Yes  | Pressure and temperature sensor
-  10  | USE_BMP             | xsns_09  | BMP180   | 0x76 - 0x77 | Yes  | Pressure and temperature sensor
-  10  | USE_BMP             | xsns_09  | BMP280   | 0x76 - 0x77 | Yes  | Pressure and temperature sensor
-  10  | USE_BMP             | xsns_09  | BME280   | 0x76 - 0x77 | Yes  | Pressure, temperature and humidity sensor
-  10  | USE_BMP             | xsns_09  | BME680   | 0x76 - 0x77 | Yes  | Pressure, temperature, humidity and gas sensor
+Index | Define              | Driver   | Device    | Address(es)              | Bus2 | Description
+------|---------------------|----------|-----------|--------------------------|------|-----------------------------------------------
+   1  | USE_PCA9685         | xdrv_15  | PCA9685   | 0x40 - 0x47              | Yes  | 16-channel 12-bit pwm driver
+   1  | USE_PCA9685_V2      | xdrv_15  | PCA9685   | 0x40 - 0x47              | Yes  | 16-channel 12-bit pwm driver
+   2  | USE_PCF8574         | xdrv_28  | PCF8574   | 0x20 - 0x26              | Yes  | 8-bit I/O expander (address range overridable)
+   2  | USE_PCF8574         | xdrv_28  | PCF8574A  | 0x39 - 0x3F              | Yes  | 8-bit I/O expander (address range overridable)
+   3  | USE_DISPLAY_LCD     | xdsp_01  |           | 0x27, 0x3F               | Yes  | LCD display
+   4  | REMOVED             |          |           |                          |      | USE_DISPLAY_SSD1306 - REMOVED
+   5  | USE_DISPLAY_MATRIX  | xdsp_03  | HT16K33   | 0x70 - 0x77              |      | 8x8 led matrix
+   6  | REMOVED             |          | SH1106    | 0x3C - 0x3D              |      | USE_DISPLAY_SH1106 - REMOVED
+   7  | USE_ADE7953         | xnrg_07  | ADE7953   | 0x38                     |      | Energy monitor
+   8  | USE_SHT             | xsns_07  | SHT1X     | Any                      |      | Temperature and Humidity sensor
+   9  | USE_HTU             | xsns_08  | HTU21     | 0x40                     | Yes  | Temperature and Humidity sensor
+   9  | USE_HTU             | xsns_08  | SI7013    | 0x40                     | Yes  | Temperature and Humidity sensor
+   9  | USE_HTU             | xsns_08  | SI7020    | 0x40                     | Yes  | Temperature and Humidity sensor
+   9  | USE_HTU             | xsns_08  | SI7021    | 0x40                     | Yes  | Temperature and Humidity sensor
+  10  | USE_BMP             | xsns_09  | BMP085    | 0x76 - 0x77              | Yes  | Pressure and temperature sensor
+  10  | USE_BMP             | xsns_09  | BMP180    | 0x76 - 0x77              | Yes  | Pressure and temperature sensor
+  10  | USE_BMP             | xsns_09  | BMP280    | 0x76 - 0x77              | Yes  | Pressure and temperature sensor
+  10  | USE_BMP             | xsns_09  | BME280    | 0x76 - 0x77              | Yes  | Pressure, temperature and humidity sensor
+  10  | USE_BMP             | xsns_09  | BME680    | 0x76 - 0x77              | Yes  | Pressure, temperature, humidity and gas sensor
   11  | USE_BH1750          | xsns_10  | BH1750   | 0x23, 0x5C  | Yes  | Ambient light intensity sensor
   12  | USE_VEML6070        | xsns_11  | VEML6070 | 0x38 - 0x39 |      | Ultra violet light intensity sensor
   13  | USE_ADS1115         | xsns_12  | ADS1115  | 0x48 - 0x4B | Yes  | 4-channel 16-bit A/D converter
@@ -127,18 +127,19 @@ Index | Define              | Driver   | Device   | Address(es) | Bus2 | Descrip
   85  | USE_ENS210          | xsns_112 | ENS210   | 0x43 - 0x44 |      | Temperature and humidity sensor
   86  | USE_AMSX915         | xsns_114 | AMS6915  | 0x28        |      | Pressure (absolute/differential) and temperature sensor
   87  | USE_SPL06_007       | xsns_25  | SPL06-007 | 0x76       |      | Pressure and temperature sensor
-  88  | USE_QMP6988         | xsns_28  | QMP6988   | 0x56, 0x70 | Yes  | Pressure and temperature sensor
-  89  | USE_HX711_M5SCALES  | xsns_34  | M5SCALES  | 0x26       | Yes  | M5Unit (Mini)Scales(HX711 STM32) U177
-  90  | USE_RX8010          | xdrv_56  | RX8010    | 0x32       | Yes  | RX8010 RTC from IOTTIMER
-  90  | USE_RX8030          | xdrv_56  | RX8030    | 0x32       | Yes  | RX8030 RTC from #23855
-  91  | USE_MS5837          | xsns_116 | MS5837    | 0x76       |      | Pressure and temperature sensor
-  92  | USE_PCF85063        | xdrv_56  | PCF85063  | 0x51       |      | PCF85063 Real time clock
-  93  | USE_AS33772S        | xdrv_119 | AS33772S  | 0x52       | Yes  | AS33772S USB PD Sink Controller
-  94  | USE_RV3028          | xdrv_56  | RV3028    | 0x52       | Yes  | RV-3028-C7 RTC Controller
-  95  | USE_AGS02MA         | xsns_118 | AGS02MA   | 0x1A       |      | TVOC Gas sensor
-  96  | USE_RX8025          | xdrv_56  | RX8025    | 0x32       | Yes  | RX8025 RTC
-  97  | USE_SEN6X           | xsns_119 | SEN6X     | 0x6B       | Yes  | Gas (CO2/VOC/NOx index) and air quality (PPM <1,<2.5,<4,<10)
-  98  | USE_FM24CXX         | xdrv_93  | FM24CXX   | 0x50 - 0x57| Yes  | FM24CXX - External FRAM with console / berry R/W operations
-  99  | USE_STCC4           | xsns_120 | STCC4     | 0x64, 0x65 | Yes  | CO2 and optional temperature and humidity sensor
- 111  | USE_BMV080          | xsns_125 |           | 0x54       | Yes  | BMV080
-  NOTE: Bus2 supported on ESP32 only.
+  88  | USE_QMP6988         | xsns_28  | QMP6988   | 0x56, 0x70               | Yes  | Pressure and temperature sensor
+  89  | USE_HX711_M5SCALES  | xsns_34  | M5SCALES  | 0x26                     | Yes  | M5Unit (Mini)Scales(HX711 STM32) U177
+  90  | USE_RX8010          | xdrv_56  | RX8010    | 0x32                     | Yes  | RX8010 RTC from IOTTIMER
+  90  | USE_RX8030          | xdrv_56  | RX8030    | 0x32                     | Yes  | RX8030 RTC from #23855
+  91  | USE_MS5837          | xsns_116 | MS5837    | 0x76                     |      | Pressure and temperature sensor
+  92  | USE_PCF85063        | xdrv_56  | PCF85063  | 0x51                     | Yes  | PCF85063 Real time clock
+  93  | USE_AS33772S        | xdrv_119 | AS33772S  | 0x52                     | Yes  | AS33772S USB PD Sink Controller
+  94  | USE_RV3028          | xdrv_56  | RV3028    | 0x52                     | Yes  | RV-3028-C7 RTC Controller
+  95  | USE_AGS02MA         | xsns_118 | AGS02MA   | 0x1A                     |      | TVOC Gas sensor
+  96  | USE_RX8025          | xdrv_56  | RX8025    | 0x32                     | Yes  | RX8025 RTC
+  97  | USE_SEN6X           | xsns_119 | SEN6X     | 0x6B                     | Yes  | Gas (CO2/VOC/NOx index) and air quality (PPM <1,<2.5,<4,<10)
+  98  | USE_FM24CXX         | xdrv_93  | FM24CXX   | 0x50 - 0x57              | Yes  | FM24CXX - External FRAM with console / berry R/W operations
+  99  | USE_STCC4           | xsns_120 | STCC4     | 0x64, 0x65               | Yes  | CO2 and optional temperature and humidity sensor
+ 111  | USE_BMV080          | xsns_125 | BMV080    | 0x54                     | Yes  | BMV080
+
+  NOTE: Bus2 is supported on ESP8266, ESP32, ESP32-C6, ESP32-H2, ESP32-P4, ESP32-S2 and ESP32-S3
