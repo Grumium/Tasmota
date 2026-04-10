@@ -536,6 +536,7 @@ const char kSensorNamesFixed[] PROGMEM =
 #define MAX_DSB                  4
 #define MAX_BP1658CJ_DAT        16
 #define MAX_DINGTIAN_SHIFT       4
+#define MAX_OPC                  4
 #define MAX_MAGIC_SWITCH_MODES   2
 #define MAX_BL0906_RX            6  // Model number of phases, 2 (EM2), 6 (EM6)
 #define MAX_BL0942_RX            8  // Baudrates 1/5 (4800), 2/6 (9600), 3/7 (19200), 4/8 (38400), Support Positive values only 1..4, Support also negative values 5..8
@@ -649,7 +650,7 @@ const uint16_t kGpioNiceList[] PROGMEM = {
   AGPIO(GPIO_NRF24_DC),
 #endif
 #ifdef USE_OPC
-  AGPIO(GPIO_OPC_CS) + AGMAX(MAX_SPI),           // Alphasense OPC Chip Select
+  AGPIO(GPIO_OPC_CS) + AGMAX(MAX_OPC),           // Alphasense OPC Chip Select
 #endif
 #ifdef USE_RC522
   AGPIO(GPIO_RC522_CS),                          // RC522 Rfid Chip Select

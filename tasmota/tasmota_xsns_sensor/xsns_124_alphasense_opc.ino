@@ -21,7 +21,7 @@
 #ifdef USE_OPC
 #define XSNS_124                  124
 #define D_CMND_OPC "OPC"
-#define OPC_MAX_SENSORS           MAX_SPI  // Max 1 on ESP8266, 2 on ESP32
+#define OPC_MAX_SENSORS           MAX_OPC  // Max 4 OPC sensors
 
 #define FORMAT_PM_DIA(val_um100, buffer)                        \
   do {                                                          \
@@ -88,8 +88,7 @@ typedef enum {
   OPC_RESET        = 1 << 12  //4096
 } OPC_mode_bit_field_t;
 
-//const char kOPC_Codes[] PROGMEM = "OPC_CHK_STATUS|OPC_RESET|OPC_READ_PM|OPC_READ_HIST|OPC_READ_POWER|OPC_READ_FW|OPC_READ_SN|OPC_READ_INFO|OPC_WRITE_POWER";
-void OPCReadDataToStruct(OPC_CommandCodes_t cmd); // Todo: Change to boolean
+void OPCReadDataToStruct(OPC_CommandCodes_t cmd);
 void OPCWriteControl(OPC_CommandCodes_t cmd);
 
 struct OPC_Defaults {
@@ -121,20 +120,10 @@ const OPC_Defaults OPCCommand[] PROGMEM = {
 
 #ifdef USE_WEBSERVER
 #define WEB_HANDLE_OPC "s124"
-//const char HTTP_BTN_OPC[] PROGMEM = 
-//"<p>"
-//"<button onclick='sendOPCCommand()'>Toggle " D_CMND_OPC "</button>"
-//"</p>"
-//"<script>"
-//"function sendOPCCommand() {"
-//"  fetch('" WEB_HANDLE_OPC "', { method: 'POST' });"
-//"}"
-//"</script>";
 #endif // USE_WEBSERVER
 
 #define OPC_SLOW_INTERVAL 4
 #define OPC_DEFAULT_INTERVAL 2
-//#define OPC_TYPES         4          // OPC-N2, OPC-N3, OPC-R1 and OPC-R2
 
 const char S_JSON_OPC_COMMAND_NVALUE[] PROGMEM = "{\"" D_CMND_OPC "%s\":%d}";
 
@@ -145,27 +134,18 @@ const char kBinsZeroString[] PROGMEM =
   "0,0,0,0,0,0,0,0,"
   "0,0,0,0,0,0,0,0";
 
-static const uint16_t binsZero[24] = { 0 };
+#ifdef USE_WEBSERVER
+const char kOpcEmptyCell[] PROGMEM = "<td></td><td style='text-align:right'>-</td>";
+#endif
+
 static const uint8_t kMaxSpiRetries = 10; 
 
 struct OPC_T {
-  //bool chk_status;
-  //bool init;
-  uint16_t mode, setmode;     //
-  uint8_t interval    = OPC_DEFAULT_INTERVAL ;
-  uint8_t setinterval = OPC_DEFAULT_INTERVAL ;
-  int8_t  cs_pin      = -1;               // actual GPIO pin number of the active OPC_CS
-  //uint8_t power;
-  char types[20];
-  //unsigned char data[61];
-
-  //struct POWER_T {
-  //  uint8_t state_fan, state_laser, dac_fan, dac_laser, switch_laser, toggle_gain; 
-  //};
-
-  //struct STATUS_T {
-  //  uint8_t fan_on, laser_on, fan_dac, laser_dac, laser_sw, gain;
-  //};
+  uint16_t mode, setmode;
+  uint8_t interval    = OPC_DEFAULT_INTERVAL;
+  uint8_t setinterval = OPC_DEFAULT_INTERVAL;
+  int8_t  cs_pin      = -1;
+  char types[8];
   struct CONFIG_T {
     // 16-bit ADC Bin boundaries (BB0 - BB24)
     uint16_t bin_boundaries_adc[25];         // [0] - [24]
@@ -194,29 +174,24 @@ struct OPC_T {
     uint8_t fan_on, laser_on, fan_dac, laser_dac, laser_sw, gain;
   } status;
   struct DATA_T {
-
-
     struct PM_T {
       float a, b, c;
       char dia_a[FLOATSZ], dia_b[FLOATSZ], dia_c[FLOATSZ];
     } pm;
 
     float temp, humi, abs_humi, flow, period;
-    char concstr[200];
+    char concstr[144];
 
-    unsigned char sn[60];
-    unsigned char info[60];
     bool available;
     bool isFirst;
   } data;
-  hist_n2data_t *hist_n2 = nullptr;  // per-sensor histogram buffer (N2)
-  hist_n3data_t *hist_n3 = nullptr;  // per-sensor histogram buffer (N3)
+  hist_n3data_t *hist_n3 = nullptr;
 };
 
 OPC_T opc[OPC_MAX_SENSORS];
-uint8_t opc_count = 0;   // number of detected OPC sensors
-uint8_t opc_idx   = 0;   // index of currently active sensor (set before every SPI call)
-#define OPC opc[opc_idx] // convenience alias – always refers to the active sensor
+uint8_t opc_count = 0;
+uint8_t opc_idx   = 0;
+#define OPC opc[opc_idx]
 
 const char* OPCReplaceDotWithUnderscore(const char* input) {
   static char buffer[FLOATSZ];
@@ -267,7 +242,6 @@ void OPCAllocateMem(uint32_t type) {
   void  **ptr;
   size_t  size;
   switch (type) {
-    case 0: ptr = (void**)&OPC.hist_n2; size = sizeof(hist_n2data_t); break;
     case 1: ptr = (void**)&OPC.hist_n3; size = sizeof(hist_n3data_t); break;
     default: return;
   }
@@ -284,37 +258,19 @@ void OPCAllocateMem(uint32_t type) {
 }
 
 bool OPCInit(void) {
-  //GetTextIndexed(OPC.types, sizeof(OPC.types), 5, kOPC_Types);
-  //OPC.mode &= ~0x0F; // delete OPCs
   uint8_t regInfo = pgm_read_byte(&OPCCommand[OPC_READ_INFO].reg);
   uint8_t lenInfo = pgm_read_byte(&OPCCommand[OPC_READ_INFO].val[0]);
-  if (!OPCHandleData(regInfo, 0xF3, lenInfo, OPC.data.info)) {
-    //  OPC.interval = 5;
+  unsigned char info[60];
+  if (!OPCHandleData(regInfo, 0xF3, lenInfo, info)) {
     return false;
   }
-  //if (OPC.msg.histogram_p) {
-  //  free(OPC.msg.histogram_p);
-  //  OPC.msg.histogram_p = NULL;
-  //}
 
   for (uint32_t i = 0; i < 4; i++) {
     GetTextIndexed(OPC.types, sizeof(OPC.types), i, kOPC_Types);
-      //str = GetTextIndexed(OPC.types, sizeof(OPC.types), OPC.type, kOPC_Types);
-    AddLog(LOG_LEVEL_INFO, PSTR("Type search %s"), OPC.types);
-    if (strstr((const char*)OPC.data.info, OPC.types) != NULL) {
-      AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d found and initialized %s"), D_CMND_OPC, opc_idx + 1, OPC.types);
-      AddLog(LOG_LEVEL_INFO, PSTR("%s: %s"), D_CMND_OPC, OPC.data.info);
-      OPC.mode |= (1 << i); // Set Bit i
-      //AddLog(LOG_LEVEL_INFO, PSTR("%s: mode is: %i  and lowest bit is %i"), D_CMND_OPC, i, (__builtin_ctz(OPC.mode & 0x0F)));
-
-      //uint8_t len = OPCCommand[OPC_READ_HIST].val[i];
-      //OPCAllocateMem(i);  // Speicher für Histogramm-Struktur allokieren
-
-      //if (no hist ptr for this type) {
-      //  AddLog(LOG_LEVEL_ERROR, PSTR("OPC: Memory allocation failed for type %u"), i);
-      //  return false;
-      //}
-      return ((OPC.mode & 0x0F) != 0);
+    if (strstr((const char*)info, OPC.types) != NULL) {
+      AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d found %s"), D_CMND_OPC, opc_idx + 1, OPC.types);
+      OPC.mode |= (1 << i);
+      return true;
     }   
   }
   return false;
@@ -324,20 +280,10 @@ bool OPCInit(void) {
 static void OPCProcessMeasurements(void) {
   if (!OPC.data.available) { return; }
   if (OPC.mode & OPC_PMHIST) {
-    const uint32_t active = __builtin_ctz(OPC.mode & 0x0F);
-    void *hist_ptr = (active == 0) ? (void*)OPC.hist_n2
-                   : (active == 1) ? (void*)OPC.hist_n3
-                   : nullptr;
-    if (!hist_ptr) { return; }
-    // ── Histogram mode ───────────────────────────────────────────────────────
-    if ((1U << active) == OPC_TYPE_N2) {
-      auto *n2 = static_cast<hist_n2data_t *>(hist_ptr);
-      OPC.data.pm.a = n2->pm_a;
-      OPC.data.pm.b = n2->pm_b;
-      OPC.data.pm.c = n2->pm_c;
-
-    } else if ((1U << active) == OPC_TYPE_N3) {
-      auto *n3 = static_cast<hist_n3data_t *>(hist_ptr);
+    if (!(OPC.mode & OPC_TYPE_N3)) { return; }  // Only N3 histogram supported
+    if (!OPC.hist_n3) { return; }
+    {
+      auto *n3 = static_cast<hist_n3data_t *>((void*)OPC.hist_n3);
 
     
       uint8_t period_int;
@@ -349,17 +295,16 @@ static void OPCProcessMeasurements(void) {
       if (period_int != OPC.interval) {
         return;
       }
-      //AddLog(LOG_LEVEL_INFO, PSTR("OPC: OPC.data.period %f"), OPC.data.period);
-      //AddLog(LOG_LEVEL_INFO, PSTR("OPC: OPC.interval %u"), OPC.interval);
       OPC.data.period = n3->period * 0.01f; 
 
       OPC.data.pm.a = n3->pm_a;
       OPC.data.pm.b = n3->pm_b;
       OPC.data.pm.c = n3->pm_c;
 
-      // Histogram concentrations
-      if (n3->flow == 0 || n3->period == 0 ||
-          !memcmp(n3->bins, binsZero, sizeof(n3->bins))) {
+      // Check for zero bins
+      bool bins_zero = true;
+      for (uint8_t bi = 0; bi < 24; bi++) { if (n3->bins[bi]) { bins_zero = false; break; } }
+      if (n3->flow == 0 || n3->period == 0 || bins_zero) {
         strlcpy(OPC.data.concstr, kBinsZeroString, sizeof(OPC.data.concstr));
         OPC.data.flow = 0.0f;
       } else {
@@ -430,9 +375,6 @@ void OPCLoop(void) {
       }
     }
 
-    //if (diff & 0x960) { 
-    //  DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: Changes detected: 0x%03X"), diff);
-
     if (diff & OPC_FONOFF) {
       OPCWriteControl((OPC.setmode & OPC_FONOFF) ? OPC_WRITE_FON : OPC_WRITE_FOFF);
       OPC.mode ^= OPC_FONOFF;
@@ -458,13 +400,11 @@ void OPCLoop(void) {
       OPC.setmode ^= OPC_RESET;
       OPC.mode &= ~0x0F;
       continue;
-    }   
-    //}
+    }
 
     if ((TasmotaGlobal.uptime % OPC.interval) == 0) {  
       if ((OPC.mode & 0x0F) == 0) { //if no OPC, do the init!
         AddLog(LOG_LEVEL_INFO, PSTR("%s: Searching sensor..."), D_CMND_OPC);
-        //AddLog(LOG_LEVEL_INFO, PSTR("OPC mode after init: 0x%02X"), OPC.mode);
         if (OPCInit()) {
           OPC.setmode = OPC.mode &= ~0x10;
           OPC.setmode ^= OPC_CONFIG;
@@ -476,16 +416,13 @@ void OPCLoop(void) {
       if (diff & OPC_PMHIST) {
         OPC.mode ^= OPC_PMHIST;
         if ((OPC.mode & OPC_PMHIST)) {
-          //OPCAllocateMem((OPC.mode ? __builtin_ctz(OPC.mode) : -1));
           OPCAllocateMem(__builtin_ctz(OPC.mode & 0x0F));
         }
       }
       if ((OPC.mode & 0x60) == 0x60) { //fan on and laser on?
         if (!(OPC.mode & OPC_PMHIST)) {
-          //AddLog(LOG_LEVEL_INFO, PSTR("Read PM: 0x%02X"), OPC.mode);
           OPCReadDataToStruct(OPC_READ_PM);
         } else {
-          //AddLog(LOG_LEVEL_INFO, PSTR("Read Hist: 0x%02X"), OPC.mode);
           OPCReadDataToStruct(OPC_READ_HIST);
         }  
       } 
@@ -515,10 +452,7 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
     case OPC_READ_CONFIG: target = &OPC.config;     break;
     case OPC_READ_STATUS: target = &OPC.status;     break;
     case OPC_READ_HIST: {
-      uint32_t active = __builtin_ctz(OPC.mode & 0x0F);
-      target = (active == 0) ? (void*)OPC.hist_n2
-             : (active == 1) ? (void*)OPC.hist_n3
-             : nullptr;
+      target = (OPC.mode & OPC_TYPE_N3) ? (void*)OPC.hist_n3 : nullptr;
       break;
     }
     default: break;
@@ -531,25 +465,20 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
   if (OPCHandleData(reg, 0xF3, len, data)) {
     DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("%s: handle reg %u len %u"), D_CMND_OPC, reg, len);
     if (cmd == OPC_READ_PM || cmd == OPC_READ_HIST ) {  
-      if (!(OPC.mode & OPC_TYPE_N2)) {
-        if (!CheckCRC(data, len)) { AddLog(LOG_LEVEL_ERROR, PSTR("CRC check failed.")); return; } // CRC check failed.
-        memcpy(target, data, len-2);
-        OPC.data.available = true;
-        return;
-      }
-      memcpy(target, data, len);
+      if (!CheckCRC(data, len)) { AddLog(LOG_LEVEL_ERROR, PSTR("CRC check failed.")); return; }
+      memcpy(target, data, len-2);
+      OPC.data.available = true;
+      return;
     }
     if (cmd == OPC_READ_CONFIG || cmd == OPC_READ_STATUS) {  
       memcpy(target, data, len);
-      //OPC.data.available = true;
       return;
     }
   }
 }
 
 bool CheckCRC(unsigned char data[], size_t length) {
-  // OPC-N3 and R1
-  if (OPC.mode & OPC_TYPE_N2 || data == NULL || length < 2){ return false; }
+  if (data == NULL || length < 2) { return false; }
   uint16_t crc = 0xFFFF ;
   for (size_t i = 0; i < length - 2; i++) {
     crc ^= (uint16_t)data[i];
@@ -560,16 +489,6 @@ bool CheckCRC(unsigned char data[], size_t length) {
   return (crc == ((data[length-1] << 8) | data[length-2]));
 }
 
-
-void OPCSpiEnable(void) {
-  SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE1));  // Set up SPI at 400 kHz, MSB first, Capture at rising edge
-  digitalWrite(OPC.cs_pin, 0);
-}
-
-void OPCSpiDisable(void) {
-  digitalWrite(OPC.cs_pin, 1);
-  SPI.endTransaction();     
-}
 
 void HandleOPCAction(void) {
   if (!HttpCheckPriviledgedAccess()) { return; }
@@ -629,23 +548,14 @@ bool OPCHandleData(uint8_t reg, uint8_t cmd, uint8_t count, uint8_t* bytes)
 }
 
 void OPCWriteControl(OPC_CommandCodes_t cmd) {
-  //if (cmd != OPC_WRITE_ON && cmd != OPC_WRITE_OFF && cmd != OPC_WRITE_LOFF && cmd != OPC_WRITE_LON) {
-  //  AddLog(LOG_LEVEL_INFO, PSTR("%s: Invalid write command %d"), D_CMND_OPC, cmd);
-  //  return;
-  //}
-
-  uint8_t type, reg, command;
-  type    = (__builtin_ctz(OPC.mode & 0x0F));
-  reg     = pgm_read_byte(&OPCCommand[cmd].reg);           //memcpy_P(&reg, &OPCCommand[cmd].reg, sizeof(uint8_t));          // Read register from PROGMEM
-  command = pgm_read_byte(&OPCCommand[cmd].val[type]); //memcpy_P(&command, &OPCCommand[cmd].val[OPC.type], sizeof(uint8_t));  // Read value based on OPC.type
-  AddLog(LOG_LEVEL_INFO, PSTR("%s: cmd =%u"), D_CMND_OPC, cmd);
-  AddLog(LOG_LEVEL_INFO, PSTR("%s: Writing cmd 0x%02X to register 0x%02X, OPC type=%u"), D_CMND_OPC, command, reg, type);
-
+  uint8_t type = __builtin_ctz(OPC.mode & 0x0F);
+  uint8_t reg  = pgm_read_byte(&OPCCommand[cmd].reg);
+  uint8_t val  = pgm_read_byte(&OPCCommand[cmd].val[type]);
+  AddLog(LOG_LEVEL_INFO, PSTR("%s: Writing 0x%02X to reg 0x%02X (type=%u)"), D_CMND_OPC, val, reg, type);
   unsigned char ret;
-  OPCHandleData(reg, command, 1, &ret);
+  OPCHandleData(reg, val, 1, &ret);
   AddLog(LOG_LEVEL_INFO, PSTR("%s: returned 0x%02X"), D_CMND_OPC, ret);
-
-} 
+}
 
 bool OPCCmd(void)
 {
@@ -685,10 +595,8 @@ void OPCSelectMode(uint16_t mode)
 
   switch(mode){
     case 0:
-      OPC.setmode &= ~(OPC_FONOFF | OPC_LONOFF); // Alle Modi ausschalten
-      break;//OPCWriteControl(OPC_WRITE_FOFF);
-      //delay(20);
-      //OPCWriteControl(OPC_WRITE_LOFF);
+      OPC.setmode &= ~(OPC_FONOFF | OPC_LONOFF);
+      break;
     case 1:
       OPC.setmode |= (OPC_FONOFF | OPC_LONOFF); 
       break;
@@ -719,9 +627,6 @@ void OPCSelectMode(uint16_t mode)
     case 10:
       OPC.setmode |= OPC_RESET;
       break;
-    //case 5:
-    //  OPC.mode |= OPC_PMHIST;
-    //  break;
   }
 }
 
@@ -739,67 +644,41 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     ResponseAppend_P(PSTR(",\"First_Publish\":%d"), OPC.data.isFirst);
     if ((OPC.mode & 0x0F) && (OPC.mode & OPC_STATUS))
     {
-        ResponseAppend_P(PSTR(",\"Status\":{"));
-        ResponseAppend_P(PSTR("\"fan_on\":%u,"), OPC.status.fan_on);
-        ResponseAppend_P(PSTR("\"laserdac_on\":%u,"), OPC.status.laser_on);
-        ResponseAppend_P(PSTR("\"fandac_val\":%u,"), OPC.status.fan_dac);
-        ResponseAppend_P(PSTR("\"laserdac_val\":%u,"), OPC.status.laser_dac);
-        ResponseAppend_P(PSTR("\"laser_switch\":%u,"), OPC.status.laser_sw);
-        ResponseAppend_P(PSTR("\"gain_setting\":%u}"), OPC.status.gain);
-      if (OPC.mode & OPC_STATUS) {
-          AddLog(LOG_LEVEL_INFO, PSTR("OPC: RESET STATUS FLAG"));
-          OPC.mode ^= OPC_STATUS; 
-        }
+        ResponseAppend_P(PSTR(",\"Status\":{\"fan_on\":%u,\"laserdac_on\":%u,\"fandac_val\":%u,\"laserdac_val\":%u,\"laser_switch\":%u,\"gain_setting\":%u}"),
+          OPC.status.fan_on, OPC.status.laser_on, OPC.status.fan_dac,
+          OPC.status.laser_dac, OPC.status.laser_sw, OPC.status.gain);
+        OPC.mode ^= OPC_STATUS;
     }
     if ((OPC.mode & 0x0F) && (OPC.mode & OPC_CONFIG))
     {
         ResponseAppend_P(PSTR(",\"Config\":{"));
 
-        // 1. bin_boundaries_adc[25]
-        ResponseAppend_P(PSTR("\"bin_boundaries_adc\":["));
-        for (int i = 0; i < 25; i++) {
-          ResponseAppend_P(PSTR("%u"), OPC.config.bin_boundaries_adc[i]);
-          if (i < 24) ResponseAppend_P(PSTR(","));
-        }
-        ResponseAppend_P(PSTR("],"));
+        auto appendU16Array = [](const char *key, const uint16_t *arr, uint8_t cnt) {
+          ResponseAppend_P(PSTR("\"%s\":["), key);
+          for (uint8_t i = 0; i < cnt; i++) {
+            ResponseAppend_P((i < cnt - 1) ? PSTR("%u,") : PSTR("%u"), arr[i]);
+          }
+          ResponseAppend_P(PSTR("],"));
+        };
+        appendU16Array("bin_boundaries_adc",   OPC.config.bin_boundaries_adc,  25);
+        appendU16Array("bin_boundaries_um100",  OPC.config.bin_boundaries_um100, 25);
+        appendU16Array("bin_weightings",        OPC.config.bin_weightings,       24);
 
-        // 2. bin_boundaries_um100[25]
-        ResponseAppend_P(PSTR("\"bin_boundaries_um100\":["));
-        for (int i = 0; i < 25; i++) {
-          ResponseAppend_P(PSTR("%u"), OPC.config.bin_boundaries_um100[i]);
-          if (i < 24) ResponseAppend_P(PSTR(","));
-        }
-        ResponseAppend_P(PSTR("],"));
+        ResponseAppend_P(PSTR(
+          "\"pm_dia_a\":%u,\"pm_dia_b\":%u,\"pm_dia_c\":%u,"
+          "\"max_tof\":%u,\"am_sampling_interval_count\":%u,"
+          "\"am_idle_interval_count\":%u,\"am_max_data_arrays\":%u,"
+          "\"am_only_save_pm\":%u,\"am_fan_on_idle\":%u,"
+          "\"am_laser_on_idle\":%u,\"tof_to_sfr_factor\":%u,"
+          "\"pvp\":%u,\"bin_weighting_index\":%u}"),
+          OPC.config.pm_dia_a, OPC.config.pm_dia_b, OPC.config.pm_dia_c,
+          OPC.config.max_tof, OPC.config.am_sampling_interval_count,
+          OPC.config.am_idle_interval_count, OPC.config.am_max_data_arrays,
+          OPC.config.am_only_save_pm, OPC.config.am_fan_on_idle,
+          OPC.config.am_laser_on_idle, OPC.config.tof_to_sfr_factor,
+          OPC.config.pvp, OPC.config.bin_weighting_index);
 
-        // 3. bin_weightings[24]
-        ResponseAppend_P(PSTR("\"bin_weightings\":["));
-        for (int i = 0; i < 24; i++) {
-          ResponseAppend_P(PSTR("%u"), OPC.config.bin_weightings[i]);
-          if (i < 23) ResponseAppend_P(PSTR(","));
-        }
-        ResponseAppend_P(PSTR("],"));
-
-        // 4. einzelne PM-Grenzen
-        ResponseAppend_P(PSTR("\"pm_dia_a\":%u,"), OPC.config.pm_dia_a);
-        ResponseAppend_P(PSTR("\"pm_dia_b\":%u,"), OPC.config.pm_dia_b);
-        ResponseAppend_P(PSTR("\"pm_dia_c\":%u,"), OPC.config.pm_dia_c);
-
-        // 5. weitere Skalierungs- und Flags-Werte
-        ResponseAppend_P(PSTR("\"max_tof\":%u,"), OPC.config.max_tof);
-        ResponseAppend_P(PSTR("\"am_sampling_interval_count\":%u,"), OPC.config.am_sampling_interval_count);
-        ResponseAppend_P(PSTR("\"am_idle_interval_count\":%u,"), OPC.config.am_idle_interval_count);
-        ResponseAppend_P(PSTR("\"am_max_data_arrays\":%u,"), OPC.config.am_max_data_arrays);
-        ResponseAppend_P(PSTR("\"am_only_save_pm\":%u,"), OPC.config.am_only_save_pm);
-        ResponseAppend_P(PSTR("\"am_fan_on_idle\":%u,"), OPC.config.am_fan_on_idle);
-        ResponseAppend_P(PSTR("\"am_laser_on_idle\":%u,"), OPC.config.am_laser_on_idle);
-        ResponseAppend_P(PSTR("\"tof_to_sfr_factor\":%u,"), OPC.config.tof_to_sfr_factor);
-        ResponseAppend_P(PSTR("\"pvp\":%u,"), OPC.config.pvp);
-        ResponseAppend_P(PSTR("\"bin_weighting_index\":%u}"), OPC.config.bin_weighting_index);
-
-        if (OPC.mode & OPC_CONFIG) {
-          DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: RESET CONFIG FLAG"));
-          OPC.mode ^= OPC_CONFIG; 
-        }
+        OPC.mode ^= OPC_CONFIG;
     }
 
   }
@@ -809,7 +688,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     OPC.data.isFirst = false;  // consume – avoids duplicate display until next packet
   }
 
-  if ((!(OPC.mode & 0x0F))            // no OPC detected
+  if ((!(OPC.mode & 0x0F))
       || (OPC.mode & OPC_OVERRIDE)
       || (!(OPC.mode & OPC_FONOFF))
       || (!(OPC.mode & OPC_LONOFF)))
@@ -817,11 +696,8 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
       if (json) { 
         ResponseJsonEnd(); 
       }
-      continue;  // next sensor, not return
+      continue;
   }
-  
-  char types[11];
-  strlcpy(types, OPC.types, sizeof(types));
 
   if (json) {
     ResponseAppend_P(PSTR(",\"Gain\":%u"), OPC.status.gain);
@@ -898,7 +774,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
         WSContentSend_P(PSTR("{s}Gain</th>"));
         for (uint8_t i = 0; i < opc_count; i++) {
           if (rdy[i]) WSContentSend_P(PSTR("<td></td>" OPC_AL "%u</td>"), opc[i].status.gain);
-          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          else        WSContentSend_P(kOpcEmptyCell);
         }
         WSContentSend_P(PSTR("{e}"));
 
@@ -917,7 +793,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
         WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_a);
         for (uint8_t i = 0; i < opc_count; i++) {
           if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.a);
-          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          else        WSContentSend_P(kOpcEmptyCell);
         }
         WSContentSend_P(PSTR("{e}"));
 
@@ -925,7 +801,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
         WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_b);
         for (uint8_t i = 0; i < opc_count; i++) {
           if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.b);
-          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          else        WSContentSend_P(kOpcEmptyCell);
         }
         WSContentSend_P(PSTR("{e}"));
 
@@ -933,7 +809,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
         WSContentSend_P(PSTR("{s}PM%s</th>"), lbl_c);
         for (uint8_t i = 0; i < opc_count; i++) {
           if (rdy[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%1_f " D_UNIT_MICROGRAM_PER_CUBIC_METER "</td>"), &opc[i].data.pm.c);
-          else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+          else        WSContentSend_P(kOpcEmptyCell);
         }
         WSContentSend_P(PSTR("{e}"));
 
@@ -942,7 +818,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
           WSContentSend_P(PSTR("{s}" D_FLOW_RATE "</th>"));
           for (uint8_t i = 0; i < opc_count; i++) {
             if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%3_f " D_UNIT_LITER_PER_MINUTE "</td>"), &opc[i].data.flow);
-            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+            else        WSContentSend_P(kOpcEmptyCell);
           }
           WSContentSend_P(PSTR("{e}"));
 
@@ -950,7 +826,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
           WSContentSend_P(PSTR("{s}" D_JSON_PERIOD "</th>"));
           for (uint8_t i = 0; i < opc_count; i++) {
             if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%2_f " D_UNIT_SECOND "</td>"), &opc[i].data.period);
-            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+            else        WSContentSend_P(kOpcEmptyCell);
           }
           WSContentSend_P(PSTR("{e}"));
 
@@ -959,7 +835,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
           for (uint8_t i = 0; i < opc_count; i++) {
             if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%*_f °%c</td>"),
                           Settings->flag2.temperature_resolution, &opc[i].data.temp, TempUnit());
-            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+            else        WSContentSend_P(kOpcEmptyCell);
           }
           WSContentSend_P(PSTR("{e}"));
 
@@ -968,7 +844,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
           for (uint8_t i = 0; i < opc_count; i++) {
             if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%*_f%%</td>"),
                           Settings->flag2.humidity_resolution, &opc[i].data.humi);
-            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+            else        WSContentSend_P(kOpcEmptyCell);
           }
           WSContentSend_P(PSTR("{e}"));
 
@@ -976,7 +852,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
           WSContentSend_P(PSTR("{s}" D_ABSOLUTE_HUMIDITY "</th>"));
           for (uint8_t i = 0; i < opc_count; i++) {
             if (n3h[i]) WSContentSend_PD(PSTR("<td></td>" OPC_AL "%4_f " D_UNIT_GRAM_PER_CUBIC_METER "</td>"), &opc[i].data.abs_humi);
-            else        WSContentSend_P(PSTR("<td></td>" OPC_AL "-</td>"));
+            else        WSContentSend_P(kOpcEmptyCell);
           }
           WSContentSend_P(PSTR("{e}"));
         }
@@ -1011,9 +887,6 @@ bool Xsns124(uint32_t function) {
       case FUNC_WEB_SENSOR:
         OPCShow(0);
         break;
-      //case FUNC_WEB_ADD_MAIN_BUTTON:
-      //  WSContentSend_P(HTTP_BTN_OPC);
-      //  break;
       case FUNC_WEB_ADD_HANDLER:
         WebServer_on(PSTR("/" WEB_HANDLE_OPC), HandleOPCAction);
         break;
