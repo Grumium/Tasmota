@@ -2447,8 +2447,12 @@ void CmndAp(void)
     case 2:  // AP2
       Settings->sta_active = XdrvMailbox.payload -1;
     }
+#if RESTART_AFTER_WIFI_CONFIG_CHANGE
     Settings->wifi_channel = 0;  // Disable stored AP
     TasmotaGlobal.restart_flag = 2;
+#else
+    WifiRequestConnectionChange();
+#endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
   }
   Response_P(S_JSON_COMMAND_NVALUE_SVALUE, XdrvMailbox.command, Settings->sta_active +1, EscapeJSONString(SettingsText(SET_STASSID1 + Settings->sta_active)).c_str());
 }
@@ -2463,7 +2467,11 @@ void CmndSsid(void)
         SettingsUpdateText(SET_STASSID1 + XdrvMailbox.index -1,
                 (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? (1 == XdrvMailbox.index) ? STA_SSID1 : STA_SSID2 : XdrvMailbox.data);
         Settings->sta_active = XdrvMailbox.index -1;
+      #if RESTART_AFTER_WIFI_CONFIG_CHANGE
         TasmotaGlobal.restart_flag = 2;
+      #else
+        WifiRequestConnectionChange();
+      #endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
       }
       ResponseCmndIdxChar(SettingsText(SET_STASSID1 + XdrvMailbox.index -1));
     }
@@ -2481,7 +2489,11 @@ void CmndPassword(void)
       SettingsUpdateText(SET_STAPWD1 + XdrvMailbox.index -1,
               (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? (1 == XdrvMailbox.index) ? STA_PASS1 : STA_PASS2 : XdrvMailbox.data);
       Settings->sta_active = XdrvMailbox.index -1;
+    #if RESTART_AFTER_WIFI_CONFIG_CHANGE
       TasmotaGlobal.restart_flag = 2;
+    #else
+      WifiRequestConnectionChange();
+    #endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
       if (!show_asterisk) {
         ResponseCmndIdxChar(SettingsText(SET_STAPWD1 + XdrvMailbox.index -1));
       }
@@ -2498,10 +2510,15 @@ void CmndHostname(void)
 {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     SettingsUpdateText(SET_HOSTNAME, (SC_DEFAULT == Shortcut()) ? WIFI_HOSTNAME : XdrvMailbox.data);
+#if RESTART_AFTER_WIFI_CONFIG_CHANGE
     if (strchr(SettingsText(SET_HOSTNAME), '%') != nullptr) {
       SettingsUpdateText(SET_HOSTNAME, WIFI_HOSTNAME);
     }
     TasmotaGlobal.restart_flag = 2;
+#else
+    UpdateGlobalHostname();
+    WifiRequestConnectionChange();
+#endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
   }
   ResponseCmndChar(SettingsText(SET_HOSTNAME));
 }

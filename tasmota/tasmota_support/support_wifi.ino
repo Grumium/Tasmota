@@ -235,6 +235,33 @@ void WifiConfig(uint8_t type)
   }
 }
 
+#if !RESTART_AFTER_WIFI_CONFIG_CHANGE
+void WifiRequestConnectionChange(void)
+{
+  Settings->wifi_channel = 0;
+  memset((void*) &Settings->wifi_bssid, 0, sizeof(Settings->wifi_bssid));
+  Wifi.scan_state = 0;
+  Wifi.config_change_pending = true;
+}
+
+void WifiApplyConnectionChange(void)
+{
+  Wifi.config_change_pending = false;
+  Wifi.config_type = 0;
+  Wifi.config_counter = 0;
+  Wifi.counter = 1;
+  Wifi.retry = Wifi.retry_init;
+  Wifi.max_retry = 0;
+  Wifi.status = 0;
+  TasmotaGlobal.wifi_state_flag = WIFI_RESTART;
+
+  if (!Settings->flag4.network_wifi) { return; }
+
+  WifiDisable();
+  WifiBegin(3, 0);
+}
+#endif  // !RESTART_AFTER_WIFI_CONFIG_CHANGE
+
 #ifdef CONFIG_IDF_TARGET_ESP32C3
   // https://github.com/espressif/arduino-esp32/issues/6264#issuecomment-1040147331
   // There's an include for this but it doesn't define the function if it doesn't think it needs it, so manually declare the function
@@ -1280,6 +1307,13 @@ void WifiCheckIp(void) {
  */
 void WifiCheck(uint8_t param)
 {
+#if !RESTART_AFTER_WIFI_CONFIG_CHANGE
+  if (Wifi.config_change_pending) {
+    WifiApplyConnectionChange();
+    return;
+  }
+#endif  // !RESTART_AFTER_WIFI_CONFIG_CHANGE
+
   Wifi.counter--;
   switch (param) {
   case WIFI_SERIAL:

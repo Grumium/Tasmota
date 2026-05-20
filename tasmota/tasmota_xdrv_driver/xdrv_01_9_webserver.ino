@@ -2525,9 +2525,14 @@ void HandleWifiConfiguration(void) {
       WebRestart(2);
     } else {
       // STATION MODE or MIXED
-      // Save the config and restart
       WifiSaveSettings();
+    #if RESTART_AFTER_WIFI_CONFIG_CHANGE
+      // Save the config and restart
       WebRestart(1);
+    #else
+      // Save the config and reconnect the WiFi stack in place
+      WebRestart(2);
+    #endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
     }
     return;
   }
@@ -4756,7 +4761,13 @@ bool Xdrv01(uint32_t function) {
           Settings->save_data = Wifi.save_data_counter;
           SettingsSaveAll();
 
-          if ( Wifi.wifi_Test_Restart ) { TasmotaGlobal.restart_flag = 2; }
+          if (Wifi.wifi_Test_Restart) {
+#if RESTART_AFTER_WIFI_CONFIG_CHANGE
+            TasmotaGlobal.restart_flag = 2;
+#else
+            WifiRequestConnectionChange();
+#endif  // RESTART_AFTER_WIFI_CONFIG_CHANGE
+          }
 
 #if (!RESTART_AFTER_INITIAL_WIFI_CONFIG)
           Web.initial_config = false;

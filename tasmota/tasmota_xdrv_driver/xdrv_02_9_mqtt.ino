@@ -106,6 +106,9 @@ struct MQTT {
   bool allowed = false;                  // MQTT enabled and parameters valid
   bool mqtt_tls = false;                 // MQTT TLS is enabled
   bool disable_logging = false;          // Temporarly disable logging on some commands
+#if !RESTART_AFTER_MQTT_CONFIG_CHANGE
+  bool config_change_pending = false;
+#endif
 } Mqtt;
 
 #ifdef USE_MQTT_TLS
@@ -205,6 +208,32 @@ void MqttNonTLSWarning(void) {
 #include <PubSubClient.h>
 
 PubSubClient MqttClient;
+
+#if !RESTART_AFTER_MQTT_CONFIG_CHANGE
+void UpdateGlobalMqttConfig(void) {
+  Format(TasmotaGlobal.mqtt_client, SettingsText(SET_MQTT_CLIENT), sizeof(TasmotaGlobal.mqtt_client));
+  Format(TasmotaGlobal.mqtt_topic, SettingsText(SET_MQTT_TOPIC), sizeof(TasmotaGlobal.mqtt_topic));
+  snprintf_P(TasmotaGlobal.mqtt_topic, sizeof(TasmotaGlobal.mqtt_topic), ResolveToken(TasmotaGlobal.mqtt_topic).c_str());
+  UpdateGlobalHostname();
+}
+
+void MqttRequestConfigChange(void) {
+  UpdateGlobalMqttConfig();
+  Mqtt.config_change_pending = true;
+}
+
+void MqttApplyConfigChange(void) {
+  Mqtt.config_change_pending = false;
+  Mqtt.connected = false;
+  if (MqttClient.connected()) {
+    MqttClient.disconnect();
+    EspClient.stop();
+  }
+  Mqtt.retry_counter = 0;
+  Mqtt.retry_counter_multiplier = 1;
+  MqttReconnect();
+}
+#endif  // !RESTART_AFTER_MQTT_CONFIG_CHANGE
 
 void MqttSetClientTimeout(void) {
 #ifdef ESP8266
@@ -1443,6 +1472,13 @@ void MqttReconnect(void) {
 }
 
 void MqttCheck(void) {
+#if !RESTART_AFTER_MQTT_CONFIG_CHANGE
+  if (Mqtt.config_change_pending) {
+    MqttApplyConfigChange();
+    return;
+  }
+#endif  // !RESTART_AFTER_MQTT_CONFIG_CHANGE
+
   if (Settings->flag.mqtt_enabled) {  // SetOption3 - Enable MQTT
     if (!MqttIsConnected()) {
       TasmotaGlobal.global_state.mqtt_down = 1;
@@ -1489,7 +1525,11 @@ void CmndMqttFingerprint(void) {
           Settings->mqtt_fingerprint[XdrvMailbox.index -1][i] = strtol(p, &p, 16);
         }
       }
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
       TasmotaGlobal.restart_flag = 2;
+#else
+      MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
     }
     ResponseCmndIdxChar(ToHex_P((unsigned char *)Settings->mqtt_fingerprint[XdrvMailbox.index -1], 20, fingerprint, sizeof(fingerprint), ' '));
   }
@@ -1499,7 +1539,11 @@ void CmndMqttFingerprint(void) {
 void CmndMqttUser(void) {
   if (XdrvMailbox.data_len > 0) {
     SettingsUpdateText(SET_MQTT_USER, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? PSTR(MQTT_USER) : XdrvMailbox.data);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     TasmotaGlobal.restart_flag = 2;
+#else
+    MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
   }
   ResponseCmndChar(SettingsText(SET_MQTT_USER));
 }
@@ -1511,7 +1555,11 @@ void CmndMqttPassword(void) {
     if (!show_asterisk) {
       ResponseCmndChar(SettingsText(SET_MQTT_PWD));
     }
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     TasmotaGlobal.restart_flag = 2;
+#else
+    MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
   } else {
     show_asterisk = true;
   }
@@ -1560,7 +1608,11 @@ void CmndMqttlog(void) {
 void CmndMqttHost(void) {
   if (XdrvMailbox.data_len > 0) {
     SettingsUpdateText(SET_MQTT_HOST, (SC_CLEAR == Shortcut()) ? "" : (SC_DEFAULT == Shortcut()) ? MQTT_HOST : XdrvMailbox.data);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     TasmotaGlobal.restart_flag = 2;
+#else
+    MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
   }
   ResponseCmndChar(SettingsText(SET_MQTT_HOST));
 }
@@ -1568,7 +1620,11 @@ void CmndMqttHost(void) {
 void CmndMqttPort(void) {
   if ((XdrvMailbox.payload > 0) && (XdrvMailbox.payload < 65536)) {
     Settings->mqtt_port = (1 == XdrvMailbox.payload) ? MQTT_PORT : XdrvMailbox.payload;
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     TasmotaGlobal.restart_flag = 2;
+#else
+    MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
   }
   ResponseCmndNumber(Settings->mqtt_port);
 }
@@ -1584,7 +1640,11 @@ void CmndMqttRetry(void) {
 void CmndMqttClient(void) {
   if (!XdrvMailbox.grpflg && (XdrvMailbox.data_len > 0)) {
     SettingsUpdateText(SET_MQTT_CLIENT, (SC_DEFAULT == Shortcut()) ? PSTR(MQTT_CLIENT_ID) : XdrvMailbox.data);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     TasmotaGlobal.restart_flag = 2;
+#else
+    MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
   }
   ResponseCmndChar(SettingsText(SET_MQTT_CLIENT));
 }
@@ -1598,7 +1658,11 @@ void CmndFullTopic(void) {
       Response_P((Settings->flag.mqtt_offline) ? S_LWT_OFFLINE : "");  // SetOption10 - Control MQTT LWT message format
       MqttPublishPrefixTopic_P(TELE, S_LWT, true);          // Offline or remove previous retained topic
       SettingsUpdateText(SET_MQTT_FULLTOPIC, stemp1);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
       TasmotaGlobal.restart_flag = 2;
+#else
+      MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
     }
   }
   ResponseCmndChar(SettingsText(SET_MQTT_FULLTOPIC));
@@ -1613,7 +1677,11 @@ void CmndPrefix(void) {
         MakeValidMqtt(0, XdrvMailbox.data);
         SettingsUpdateText(SET_MQTTPREFIX1 + XdrvMailbox.index -1,
           (SC_DEFAULT == Shortcut()) ? (1==XdrvMailbox.index) ? PSTR(SUB_PREFIX) : (2==XdrvMailbox.index) ? PSTR(PUB_PREFIX) : PSTR(PUB_PREFIX2) : XdrvMailbox.data);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
         TasmotaGlobal.restart_flag = 2;
+#else
+        MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
       }
       ResponseCmndIdxChar(SettingsText(SET_MQTTPREFIX1 + XdrvMailbox.index -1));
     }
@@ -1692,7 +1760,11 @@ void CmndGroupTopic(void) {
         }
       }
 
-      TasmotaGlobal.restart_flag = 2;
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
+  TasmotaGlobal.restart_flag = 2;
+#else
+  MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
     }
     ResponseCmndAll(SET_MQTT_GRP_TOPIC, MAX_GROUP_TOPICS);
   }
@@ -1707,7 +1779,11 @@ void CmndTopic(void) {
       Response_P((Settings->flag.mqtt_offline) ? S_LWT_OFFLINE : "");  // SetOption10 - Control MQTT LWT message format
       MqttPublishPrefixTopic_P(TELE, S_LWT, true);          // Offline or remove previous retained topic
       SettingsUpdateText(SET_MQTT_TOPIC, stemp1);
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
       TasmotaGlobal.restart_flag = 2;
+#else
+      MqttRequestConfigChange();
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
     }
   }
   ResponseCmndChar(SettingsText(SET_MQTT_TOPIC));
@@ -2077,8 +2153,23 @@ void HandleMqttConfiguration(void)
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP D_CONFIGURE_MQTT));
 
   if (Webserver->hasArg(F("save"))) {
+#ifdef USE_MQTT_TLS
+    bool mqtt_tls_changed = (Webserver->hasArg(F("b3")) != Settings->flag4.mqtt_tls);
+#endif  // USE_MQTT_TLS
     MqttSaveSettings();
+#if RESTART_AFTER_MQTT_CONFIG_CHANGE
     WebRestart(1);
+#else
+  #ifdef USE_MQTT_TLS
+    if (mqtt_tls_changed) {
+      WebRestart(1);
+    } else {
+      WebRestart(2);
+    }
+  #else
+    WebRestart(2);
+  #endif  // USE_MQTT_TLS
+#endif  // RESTART_AFTER_MQTT_CONFIG_CHANGE
     return;
   }
 
