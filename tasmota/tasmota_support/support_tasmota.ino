@@ -66,6 +66,27 @@ char* Format(char* output, const char* input_p, int size)
   return output;
 }
 
+void UpdateGlobalHostname(void)
+{
+  const char* hostname_template = SettingsText(SET_HOSTNAME);
+  if (strchr(hostname_template, '%') != nullptr) {
+    SettingsUpdateText(SET_HOSTNAME, WIFI_HOSTNAME);
+    hostname_template = SettingsText(SET_HOSTNAME);
+    if (strchr(hostname_template +1, '%') != nullptr) {
+      snprintf_P(TasmotaGlobal.hostname, sizeof(TasmotaGlobal.hostname) -1, hostname_template, TasmotaGlobal.mqtt_topic, ESP_getChipId() & 0x1FFF);
+    } else {
+      Format(TasmotaGlobal.hostname, hostname_template, sizeof(TasmotaGlobal.hostname) -1);
+    }
+  } else {
+    snprintf_P(TasmotaGlobal.hostname, sizeof(TasmotaGlobal.hostname) -1, hostname_template);
+  }
+
+  for (char *hostname = TasmotaGlobal.hostname; *hostname; hostname++) {
+    if (!(isalnum(*hostname) || ('.' == *hostname))) { *hostname = '-'; }
+    if ((hostname == TasmotaGlobal.hostname) && ('-' == *hostname)) { *hostname = 'x'; }
+  }
+}
+
 char* GetOtaUrl(char *otaurl, size_t otaurl_size)
 {
   if (strstr(SettingsText(SET_OTAURL), "%04d") != nullptr) {     // OTA url contains placeholder for chip ID

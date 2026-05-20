@@ -115,6 +115,14 @@
 
 const uint32_t VERSION_MARKER[] PROGMEM = { 0x5AA55AA5, 0xFFFFFFFF, 0xA55AA55A };
 
+#ifndef RESTART_AFTER_WIFI_CONFIG_CHANGE
+#define RESTART_AFTER_WIFI_CONFIG_CHANGE   true
+#endif
+
+#ifndef RESTART_AFTER_MQTT_CONFIG_CHANGE
+#define RESTART_AFTER_MQTT_CONFIG_CHANGE   true
+#endif
+
 struct WIFI {
   int last_tx_pwr;
   uint32_t last_event = 0;                 // Last wifi connection event
@@ -135,6 +143,9 @@ struct WIFI {
   uint16_t save_data_counter = 0;
   uint8_t old_wificonfig = MAX_WIFI_OPTION; // means "nothing yet saved here"
   uint8_t phy_mode = 0;
+#if !RESTART_AFTER_WIFI_CONFIG_CHANGE
+  bool config_change_pending = false;
+#endif
   bool wifi_test_AP_TIMEOUT = false;
   bool wifi_Test_Restart = false;
   bool wifi_Test_Save_SSID2 = false;
@@ -675,28 +686,7 @@ void setup(void) {
   snprintf_P(TasmotaGlobal.image_name, sizeof(TasmotaGlobal.image_name), PSTR("(" STR(TASMOTA_SHA_SHORT) "%s)"), PSTR(CODE_IMAGE_STR));  // Results in (85cff52-tasmota) or (release-tasmota)
 
   Format(TasmotaGlobal.mqtt_topic, SettingsText(SET_MQTT_TOPIC), sizeof(TasmotaGlobal.mqtt_topic));
-  if (strchr(SettingsText(SET_HOSTNAME), '%') != nullptr) {
-    // If hostname in Settings contains % (a format specifier), then reset hostname to WIFI_HOSTNAME from tasmota_globals.h
-    // and then expand the string.
-    SettingsUpdateText(SET_HOSTNAME, WIFI_HOSTNAME);
-    const char* first_spec = strchr(SettingsText(SET_HOSTNAME), '%');
-    const char* second_spec = strchr(first_spec + 1, '%');
-    if (first_spec && second_spec) {
-      // Two (or more) specifiers: expands first as mqtt topic and second as chip ID
-      snprintf_P(TasmotaGlobal.hostname, sizeof(TasmotaGlobal.hostname)-1, SettingsText(SET_HOSTNAME), TasmotaGlobal.mqtt_topic, ESP_getChipId() & 0x1FFF);
-    } else {
-      // One specifier: use Format() which handles %NX = last N MAC hex chars, %Nd = short chip ID dec, %d = full chip ID dec
-      Format(TasmotaGlobal.hostname, SettingsText(SET_HOSTNAME), sizeof(TasmotaGlobal.hostname)-1);
-    }
-  } else {
-    snprintf_P(TasmotaGlobal.hostname, sizeof(TasmotaGlobal.hostname)-1, SettingsText(SET_HOSTNAME));
-  }
-  char *s = TasmotaGlobal.hostname;
-  while (*s) {
-    if (!(isalnum(*s) || ('.' == *s))) { *s = '-'; }                 // Valid hostname chars are A..Z, a..z, 0..9, . and -
-    if ((s == TasmotaGlobal.hostname) && ('-' == *s)) { *s = 'x'; }  // First char cannot be a dash so replace by an x
-    s++;
-  }
+  UpdateGlobalHostname();
   snprintf_P(TasmotaGlobal.mqtt_topic, sizeof(TasmotaGlobal.mqtt_topic), ResolveToken(TasmotaGlobal.mqtt_topic).c_str());
 
   RtcInit();
