@@ -17,14 +17,7 @@
     "srcFilter": [
       "+<bme68x.c>",
       "+<bme68x.h>",
-      "+<bme68x_defs.h>",
-      "+<src/bsec.cpp>",
-      "+<src/bsec.h>",
-      "+<src/bsec_interface.c>",
-      "+<src/bsec_wrapper.c>",
-      "+<src/bsec_config_33v_3s_4d.h>",
-      "+<src/inc/bsec_datatypes.h>",
-      "+<src/inc/bsec_interface.h>"
+      "+<bme68x_defs.h>"
     ],
     "flags": [
       "-Isrc/inc"
@@ -33,10 +26,7 @@
   },
   "export": {
     "build": {
-      "flags": [
-        "-Llib/lib_i2c/BME68x/src/esp32",
-        "-lalgobsec"
-      ]
+      "flags": []
     }
   },
   "frameworks": ["arduino", "espidf"],

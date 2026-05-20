@@ -1,10 +1,15 @@
 #ifdef USE_I2C
 #ifdef USE_BMV080
+/*********************************************************************************************\
+ * BMV080 - Bosch particulate matter sensor (PM1, PM2.5, PM10) via I2C
+ * Requires precompiled Bosch SDK libraries in lib/lib_i2c/BMV080/src/esp32/:
+ *   lib_bmv080.a
+ *   lib_postProcessor.a
+\*********************************************************************************************/
 
 #define XSNS_125             125
 #define XI2C_95              95
 #define BMV080_ADDR          0x54
-#define BMV080_SERVE_PERIOD  1
 
 #include <bmv080.h>
 #include <bmv080_defs.h>
@@ -27,20 +32,21 @@ struct BMV080_State {
 
   uint32_t last_data_ms      = 0;
   uint32_t error_count       = 0;
-  uint32_t recover_attempts  = 0;
 
   struct {
     uint16_t pm1 = 0, pm25 = 0, pm10 = 0;
     bool  obstructed = false;
     bool  out_of_range = false;
-    float runtime_s = 0;
     bool  valid = false;
   } last;
 };
 static BMV080_State BMV;
 
-// --- Utils (keine Bosch-Typen in Signaturen!) ---
-static const char* BMV_AlgoNameId(uint8_t id) {
+static inline bool BMV080_Active(void) {
+  return BMV.ready && BMV.handle && BMV.cfg.powered;
+}
+
+static const char* BMV_AlgoName(uint8_t id) {
   switch (id) {
     case 2: return "FastResponse";
     case 3: return "Balanced";
@@ -49,213 +55,194 @@ static const char* BMV_AlgoNameId(uint8_t id) {
   }
 }
 
-// --- I2C Bridge ---
-class BMV080_Driver {
-public:
-  static int8_t Read(void *sercom_handle, uint16_t header, uint16_t *payload, uint16_t payload_length) {
-    auto *sc = reinterpret_cast<BmvI2cSercom*>(sercom_handle);
-    uint16_t hdr = (uint16_t)(header << 1);
-    uint8_t  hb  = (uint8_t)(hdr >> 8);
-    uint8_t  lb  = (uint8_t)(hdr & 0xFF);
-    if (I2cWriteBuffer(sc->addr, hb, &lb, 1, sc->bus)) return -1;
-    uint16_t nbytes = payload_length * 2;
-    if (nbytes > 512) return -2;
-    uint8_t raw[512];
-    if (I2cReadBuffer(sc->addr, -1, raw, nbytes, sc->bus)) return -3;
-    for (uint16_t i = 0; i < payload_length; i++) {
-      payload[i] = ((uint16_t)raw[2*i] << 8) | raw[2*i + 1];
-    }
-    return 0;
+// --- I2C Bridge (static functions for Bosch API callbacks) ---
+static int8_t BMV080_I2cRead(void *sercom_handle, uint16_t header, uint16_t *payload, uint16_t payload_length) {
+  auto *sc = reinterpret_cast<BmvI2cSercom*>(sercom_handle);
+  uint16_t hdr = (uint16_t)(header << 1);
+  uint8_t  hb  = (uint8_t)(hdr >> 8);
+  uint8_t  lb  = (uint8_t)(hdr & 0xFF);
+  if (I2cWriteBuffer(sc->addr, hb, &lb, 1, sc->bus)) return -1;
+  uint16_t nbytes = payload_length * 2;
+  if (nbytes > 512) return -2;
+  uint8_t raw[512];
+  if (I2cReadBuffer(sc->addr, -1, raw, nbytes, sc->bus)) return -3;
+  for (uint16_t i = 0; i < payload_length; i++) {
+    payload[i] = ((uint16_t)raw[2*i] << 8) | raw[2*i + 1];
   }
+  return 0;
+}
 
-  static int8_t Write(void *sercom_handle, uint16_t header, const uint16_t *payload, uint16_t payload_length) {
-    auto *sc = reinterpret_cast<BmvI2cSercom*>(sercom_handle);
-    uint16_t hdr = (uint16_t)(header << 1);
-    uint8_t  hb  = (uint8_t)(hdr >> 8);
-    uint8_t  lb  = (uint8_t)(hdr & 0xFF);
-    uint16_t nbytes = 1 + payload_length * 2;
-    if (nbytes > 255) return -1;
-    uint8_t buf[255];
-    buf[0] = lb;
-    for (uint16_t i = 0; i < payload_length; i++) {
-      buf[1 + 2*i]     = (uint8_t)(payload[i] >> 8);
-      buf[1 + 2*i + 1] = (uint8_t)(payload[i] & 0xFF);
-    }
-    return I2cWriteBuffer(sc->addr, hb, buf, nbytes, sc->bus) ? -2 : 0;
+static int8_t BMV080_I2cWrite(void *sercom_handle, uint16_t header, const uint16_t *payload, uint16_t payload_length) {
+  auto *sc = reinterpret_cast<BmvI2cSercom*>(sercom_handle);
+  uint16_t hdr = (uint16_t)(header << 1);
+  uint8_t  hb  = (uint8_t)(hdr >> 8);
+  uint8_t  lb  = (uint8_t)(hdr & 0xFF);
+  uint16_t nbytes = 1 + payload_length * 2;
+  if (nbytes > 255) return -1;
+  uint8_t buf[255];
+  buf[0] = lb;
+  for (uint16_t i = 0; i < payload_length; i++) {
+    buf[1 + 2*i]     = (uint8_t)(payload[i] >> 8);
+    buf[1 + 2*i + 1] = (uint8_t)(payload[i] & 0xFF);
   }
+  return I2cWriteBuffer(sc->addr, hb, buf, nbytes, sc->bus) ? -2 : 0;
+}
 
-  static int8_t Delay(uint32_t ms) { delay(ms); return 0; }
+static int8_t BMV080_I2cDelay(uint32_t ms) { delay(ms); return 0; }
 
-  static void DataReady(bmv080_output_t out, void*) {
-    BMV.last.runtime_s    = out.runtime_in_sec;
-    BMV.last.pm1          = (uint16_t)out.pm1_mass_concentration;
-    BMV.last.pm25         = (uint16_t)out.pm2_5_mass_concentration;
-    BMV.last.pm10         = (uint16_t)out.pm10_mass_concentration;
-    BMV.last.obstructed   = out.is_obstructed;
-    BMV.last.out_of_range = out.is_outside_measurement_range;
-    BMV.last.valid        = true;
-    BMV.last_data_ms      = millis();
-    //AddLog(LOG_LEVEL_INFO, PSTR("BMV080: t=%.1fs PM1=%.2f PM2.5=%.2f PM10=%.2f obstruct=%u out_of_range=%u"),
-    //  BMV.last.runtime_s, BMV.last.pm1, BMV.last.pm25, BMV.last.pm10,
-    //  BMV.last.obstructed, BMV.last.out_of_range);
-  }
+static bmv080_callback_data_ready_t BMV080_DataReady = [](bmv080_output_t out, void*) {
+  BMV.last.pm1          = (uint16_t)out.pm1_mass_concentration;
+  BMV.last.pm25         = (uint16_t)out.pm2_5_mass_concentration;
+  BMV.last.pm10         = (uint16_t)out.pm10_mass_concentration;
+  BMV.last.obstructed   = out.is_obstructed;
+  BMV.last.out_of_range = out.is_outside_measurement_range;
+  BMV.last.valid        = true;
+  BMV.last_data_ms      = millis();
 };
 
-// --- Bosch-Parameter setzen/lesen (intern mappen) ---
-static bool BMV080_SetAlgoOnce_(uint8_t algo_id) {
+// --- Bosch parameter helpers ---
+static bool BMV080_SetAlgo(uint8_t algo_id) {
   if (!BMV.ready || !BMV.handle) return false;
-  bmv080_measurement_algorithm_t algo = E_BMV080_MEASUREMENT_ALGORITHM_HIGH_PRECISION;
+  bmv080_measurement_algorithm_t algo;
   if      (algo_id == 2) algo = E_BMV080_MEASUREMENT_ALGORITHM_FAST_RESPONSE;
   else if (algo_id == 3) algo = E_BMV080_MEASUREMENT_ALGORITHM_BALANCED;
   else if (algo_id == 4) algo = E_BMV080_MEASUREMENT_ALGORITHM_HIGH_PRECISION;
   else return false;
-  bmv080_status_code_t rc = bmv080_set_parameter(BMV.handle, "measurement_algorithm", &algo);
-  if (rc == E_BMV080_OK) { BMV.cfg.algo_id = algo_id; return true; }
+  if (bmv080_set_parameter(BMV.handle, "measurement_algorithm", &algo) == E_BMV080_OK) {
+    BMV.cfg.algo_id = algo_id;
+    return true;
+  }
   return false;
 }
 
-static bool BMV080_ApplyIntegrationTime(float seconds) {
+static bool BMV080_SetIntegrationTime(float seconds) {
   if (!BMV.ready || !BMV.handle) return false;
   if (seconds < 1.0f)  seconds = 1.0f;
   if (seconds > 60.0f) seconds = 60.0f;
-  float val = seconds;
-  bmv080_status_code_t rc = bmv080_set_parameter(BMV.handle, "integration_time", &val);
-  if (rc == E_BMV080_OK) { BMV.cfg.integration_time = seconds; return true; }
+  if (bmv080_set_parameter(BMV.handle, "integration_time", &seconds) == E_BMV080_OK) {
+    BMV.cfg.integration_time = seconds;
+    return true;
+  }
   return false;
 }
 
-static bool BMV080_ReadIntegrationTime(void) {
-  if (!BMV.ready || !BMV.handle) return false;
+static void BMV080_ApplyConfig(void) {
+  BMV080_SetAlgo(BMV.cfg.algo_id);
+  BMV080_SetIntegrationTime(BMV.cfg.integration_time);
   float it = 0.0f;
-  bmv080_status_code_t rc = bmv080_get_parameter(BMV.handle, "integration_time", &it);
-  if (rc == E_BMV080_OK && it > 0.0f) { BMV.cfg.integration_time = it; return true; }
-  return false;
+  if (bmv080_get_parameter(BMV.handle, "integration_time", &it) == E_BMV080_OK && it > 0.0f) {
+    BMV.cfg.integration_time = it;
+  }
 }
 
-static void BMV080_ApplyConfigOnce(void) {
-  (void)BMV080_SetAlgoOnce_(BMV.cfg.algo_id);
-  (void)BMV080_ApplyIntegrationTime(BMV.cfg.integration_time);
-}
-
-// --- Power Control ---
-static bool BMV080_PowerOff(void) {
-  if (!BMV.ready || !BMV.handle) { BMV.cfg.powered = false; return true; }
-  bmv080_status_code_t rc = bmv080_stop_measurement(BMV.handle);
-  bmv080_close(&BMV.handle);
-  BMV.handle = nullptr;
-  BMV.ready  = false;
-  BMV.cfg.powered = false;
-  AddLog(LOG_LEVEL_INFO, PSTR("BMV080: powered off"));
-  return (rc == E_BMV080_OK);
-}
-
-static bool BMV080_PowerOn(void) {
-  if (BMV.ready && BMV.cfg.powered) return true;
+// --- Open / Close (shared init+poweron logic) ---
+static bool BMV080_Open(void) {
   g_sercom.addr = BMV080_ADDR;
   g_sercom.bus  = BMV.bus;
   for (int attempt = 1; attempt <= 3; ++attempt) {
     bmv080_status_code_t rc = bmv080_open(&BMV.handle, (bmv080_sercom_handle_t)&g_sercom,
-                                          BMV080_Driver::Read, BMV080_Driver::Write, BMV080_Driver::Delay);
-    if (rc != E_BMV080_OK) { AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: open failed (%d) (power on #%d)"), rc, attempt); delay(50); continue; }
+                                          BMV080_I2cRead, BMV080_I2cWrite, BMV080_I2cDelay);
+    if (rc != E_BMV080_OK) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: open failed (%d) attempt %d"), rc, attempt);
+      delay(50); continue;
+    }
     (void)bmv080_reset(BMV.handle);
-    BMV080_ApplyConfigOnce();
+    BMV080_ApplyConfig();
     rc = bmv080_start_continuous_measurement(BMV.handle);
     if (rc == E_BMV080_OK) {
-      BMV.ready = true; BMV.cfg.powered = true; BMV.last.valid = false; BMV.last_data_ms = millis();
-      (void)BMV080_ReadIntegrationTime();
-      AddLog(LOG_LEVEL_INFO, PSTR("BMV080: power on, algo=%s, IntTime=%.0fs"),
-             BMV_AlgoNameId(BMV.cfg.algo_id), BMV.cfg.integration_time);
+      BMV.ready = true; BMV.cfg.powered = true; BMV.last.valid = false;
+      BMV.last_data_ms = millis();
+      AddLog(LOG_LEVEL_INFO, PSTR("BMV080: started, algo=%s, IntTime=%.0fs"),
+             BMV_AlgoName(BMV.cfg.algo_id), BMV.cfg.integration_time);
       return true;
     }
-    AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: start failed (%d) (power on #%d)"), rc, attempt);
+    AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: start failed (%d) attempt %d"), rc, attempt);
     bmv080_close(&BMV.handle); BMV.handle = nullptr; delay(50);
   }
   return false;
 }
 
-// --- Init / Detect / Recovery ---
-static bool BMV080_Init(uint8_t addr, uint8_t bus) {
-  g_sercom.addr = addr; g_sercom.bus  = bus;
-  for (int attempt = 1; attempt <= 3; ++attempt) {
-    bmv080_status_code_t rc = bmv080_open(&BMV.handle, (bmv080_sercom_handle_t)&g_sercom,
-                                          BMV080_Driver::Read, BMV080_Driver::Write, BMV080_Driver::Delay);
-    if (rc != E_BMV080_OK) { AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: open failed (%d) (attempt %d)"), rc, attempt); delay(50); continue; }
-    (void)bmv080_reset(BMV.handle);
-    BMV080_ApplyConfigOnce();
-    rc = bmv080_start_continuous_measurement(BMV.handle);
-    if (rc == E_BMV080_OK) {
-      BMV.bus = bus; BMV.ready = true; BMV.cfg.powered = true; BMV.last.valid = false; BMV.last_data_ms = millis();
-      (void)BMV080_ReadIntegrationTime();
-      AddLog(LOG_LEVEL_INFO, PSTR("BMV080: Continuous, Algo=%s, IntTime=%.0fs"),
-             BMV_AlgoNameId(BMV.cfg.algo_id), BMV.cfg.integration_time);
-      return true;
-    }
-    AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: start failed (%d) (attempt %d)"), rc, attempt);
-    bmv080_close(&BMV.handle); BMV.handle = nullptr; delay(50);
+static void BMV080_Close(void) {
+  if (BMV.handle) {
+    bmv080_stop_measurement(BMV.handle);
+    bmv080_close(&BMV.handle);
+    BMV.handle = nullptr;
   }
-  return false;
+  BMV.ready = false;
 }
 
+// --- Power Control ---
+static bool BMV080_PowerOff(void) {
+  BMV080_Close();
+  BMV.cfg.powered = false;
+  AddLog(LOG_LEVEL_INFO, PSTR("BMV080: powered off"));
+  return true;
+}
+
+static bool BMV080_PowerOn(void) {
+  if (BMV080_Active()) return true;
+  return BMV080_Open();
+}
+
+// --- Recovery ---
 static void BMV080_Recovery(void) {
   if (!BMV.cfg.powered) return;
-  uint32_t now = millis();
-  uint32_t no_data_ms = now - BMV.last_data_ms;
-  if (no_data_ms > 3000) {
-    AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: no data %ums, errors=%u → recover"), no_data_ms, BMV.error_count);
-    AddLog(LOG_LEVEL_INFO,  PSTR("BMV080: soft recover (reset+restart)"));
-    if (bmv080_reset(BMV.handle) == E_BMV080_OK) {
-      BMV080_ApplyConfigOnce();
-      if (bmv080_start_continuous_measurement(BMV.handle) == E_BMV080_OK) {
-        AddLog(LOG_LEVEL_INFO, PSTR("BMV080: soft recover OK"));
-        BMV.last_data_ms = now; return;
-      }
-    }
-    AddLog(LOG_LEVEL_INFO, PSTR("BMV080: soft recover failed, doing hard recover"));
-    bmv080_close(&BMV.handle); BMV.handle = nullptr;
-    if (BMV080_Init(BMV080_ADDR, BMV.bus)) {
-      AddLog(LOG_LEVEL_INFO, PSTR("BMV080: hard recover OK (attempts=%u)"), ++BMV.recover_attempts);
-    } else {
-      AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: hard recover FAILED (attempts=%u)"), ++BMV.recover_attempts);
-    }
-  }
+  if (millis() - BMV.last_data_ms <= 3000) return;
+  AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: no data for %ums, recovering"), millis() - BMV.last_data_ms);
+  BMV080_Close();
+  BMV080_Open();
 }
 
-
-// --- Serve / Poll (alle ~250ms) ---
+// --- Serve / Poll (250ms needed for bmv080_serve_interrupt) ---
 static void BMV080_Every250ms(void) {
-  if (!BMV.ready || !BMV.handle || !BMV.cfg.powered) return;
-  bmv080_status_code_t rc = bmv080_serve_interrupt(BMV.handle, BMV080_Driver::DataReady, nullptr);
+  if (!BMV080_Active()) return;
+  bmv080_status_code_t rc = bmv080_serve_interrupt(BMV.handle, BMV080_DataReady, nullptr);
   if (rc != E_BMV080_OK) {
     BMV.error_count++;
-    AddLog(LOG_LEVEL_DEBUG, PSTR("BMV080: serve_interrupt error %d (count=%u)"), rc, BMV.error_count);
+    if (BMV.error_count <= 5 || (BMV.error_count % 50) == 0) {
+      AddLog(LOG_LEVEL_DEBUG, PSTR("BMV080: serve error %d (count=%u)"), rc, BMV.error_count);
+    }
+    // Soft reset on persistent HW read errors
+    if (rc == 105 && BMV.error_count >= 10) {
+      AddLog(LOG_LEVEL_INFO, PSTR("BMV080: HW_READ errors, soft reset"));
+      if (bmv080_reset(BMV.handle) == E_BMV080_OK) {
+        BMV080_ApplyConfig();
+        if (bmv080_start_continuous_measurement(BMV.handle) == E_BMV080_OK) {
+          BMV.last_data_ms = millis();
+          BMV.error_count = 0;
+          return;
+        }
+      }
+      // Soft reset failed, do full recovery
+      AddLog(LOG_LEVEL_ERROR, PSTR("BMV080: soft reset failed, full recovery"));
+      BMV080_Close();
+      BMV080_Open();
+      BMV.error_count = 0;
+    }
+  } else {
+    BMV.error_count = 0;
   }
   BMV080_Recovery();
 }
 
 // --- JSON / Web ---
 static void BMV080_Show(bool json) {
-  if (!BMV.ready || !BMV.cfg.powered || !BMV.last.valid) return;
+  if (!BMV080_Active() || !BMV.last.valid) return;
   if (json) {
-    ResponseAppend_P(PSTR(",\"BMV080\":{\"PM1\":%u,\"PM2_5\":%u,\"PM10\":%u,"
+    ResponseAppend_P(PSTR(",\"BMV080\":{\"PM1\":%u,\"PM2.5\":%u,\"PM10\":%u,"
                           "\"Obstruct\":%u,\"OutOfRange\":%u}"),
                      BMV.last.pm1, BMV.last.pm25, BMV.last.pm10,
                      BMV.last.obstructed, BMV.last.out_of_range);
   }
 #ifdef USE_WEBSERVER
   else {
-    WSContentSend_P(PSTR("<tr><th>BMV080</th><td>Power</td><td>%s</td></tr>"),
-      BMV.cfg.powered ? PSTR("true") : PSTR("false"));
-    WSContentSend_P(PSTR("<tr><th>BMV080</th><td>Algo</td><td>%s</td></tr>"),
-      BMV_AlgoNameId(BMV.cfg.algo_id));
-    WSContentSend_P(PSTR("<tr><th>BMV080</th><td>IntTime</td><td>%us</td></tr>"),
-      (uint16_t)BMV.cfg.integration_time);
+    WSContentSend_P(PSTR("{s}BMV080 Algo{m}%s{e}"), BMV_AlgoName(BMV.cfg.algo_id));
+    WSContentSend_P(PSTR("{s}BMV080 IntTime{m}%us{e}"), (uint16_t)BMV.cfg.integration_time);
     WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "1",   BMV.last.pm1);
     WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "2.5", BMV.last.pm25);
     WSContentSend_PD(HTTP_SNS_ENVIRONMENTAL_CONCENTRATION, "BMV080", "10",  BMV.last.pm10);
-    WSContentSend_P(PSTR("<tr><th>BMV080</th><td>Obstruct</td><td>%s</td></tr>"),
-      BMV.last.obstructed ? PSTR("true") : PSTR("false"));
-    WSContentSend_P(PSTR("<tr><th>BMV080</th><td>OutOfRange</td><td>%s</td></tr>"),
-      BMV.last.out_of_range ? PSTR("true") : PSTR("false"));
+    WSContentSend_P(PSTR("{s}BMV080 Obstruct{m}%s{e}"), BMV.last.obstructed ? PSTR("true") : PSTR("false"));
+    WSContentSend_P(PSTR("{s}BMV080 OutOfRange{m}%s{e}"), BMV.last.out_of_range ? PSTR("true") : PSTR("false"));
   }
 #endif
 }
@@ -266,34 +253,35 @@ static bool BMV080_SelectMode(uint16_t mode) {
     float sec = (float)(mode / 1000);
     if (sec < 1.0f)  sec = 1.0f;
     if (sec > 60.0f) sec = 60.0f;
-    if (!BMV.ready || !BMV.handle || !BMV.cfg.powered) {
+    if (!BMV080_Active()) {
       BMV.cfg.integration_time = sec;
       AddLog(LOG_LEVEL_INFO, PSTR("BMV080: Preset IntTime to %.0fs (apply on init)"), sec);
       return true;
     }
-    bool ok = BMV080_ApplyIntegrationTime(sec);
-    AddLog(LOG_LEVEL_INFO, PSTR("BMV080: Set IntTime to %.0fs %s"), sec, ok ? PSTR("OK") : PSTR("ERR"));
-    return ok;
+    return BMV080_SetIntegrationTime(sec);
   }
 
   switch (mode) {
     case 0: return BMV080_PowerOff();
     case 1: return BMV080_PowerOn();
     case 2: case 3: case 4:
-      if (!BMV.ready || !BMV.handle || !BMV.cfg.powered) { BMV.cfg.algo_id = (uint8_t)mode; return true; }
-      return BMV080_SetAlgoOnce_((uint8_t)mode);
+      if (!BMV080_Active()) { BMV.cfg.algo_id = (uint8_t)mode; return true; }
+      return BMV080_SetAlgo((uint8_t)mode);
     case 10:
-      if (!BMV.ready || !BMV.handle || !BMV.cfg.powered) return false;
+      if (!BMV080_Active()) return false;
       AddLog(LOG_LEVEL_INFO, PSTR("BMV080: Soft reset"));
       if (bmv080_reset(BMV.handle) == E_BMV080_OK) {
-        BMV080_ApplyConfigOnce();
-        if (bmv080_start_continuous_measurement(BMV.handle) == E_BMV080_OK) { BMV.last_data_ms = millis(); return true; }
+        BMV080_ApplyConfig();
+        if (bmv080_start_continuous_measurement(BMV.handle) == E_BMV080_OK) {
+          BMV.last_data_ms = millis();
+          return true;
+        }
       }
       return false;
     case 11:
       AddLog(LOG_LEVEL_INFO, PSTR("BMV080: Hard reinit"));
-      if (BMV.ready && BMV.handle) { bmv080_close(&BMV.handle); BMV.handle = nullptr; BMV.ready = false; }
-      return BMV080_Init(BMV080_ADDR, BMV.bus);
+      BMV080_Close();
+      return BMV080_Open();
     default: return false;
   }
 }
@@ -314,10 +302,9 @@ static bool BMV080Cmd(void) {
     Response_P(PSTR("{\"%s\":\"%s\"}"), XdrvMailbox.command, XdrvMailbox.data);
     return ok;
   }
-  if (BMV.ready && BMV.handle) { (void)BMV080_ReadIntegrationTime(); }
   Response_P(PSTR("{\"BMV080\":{\"Power\":%s,\"Mode\":\"Continuous\",\"Algo\":\"%s\",\"IntTime\":%u}}"),
              BMV.cfg.powered ? PSTR("true") : PSTR("false"),
-             BMV_AlgoNameId(BMV.cfg.algo_id),
+             BMV_AlgoName(BMV.cfg.algo_id),
              (uint16_t)BMV.cfg.integration_time);
   return true;
 }
@@ -326,7 +313,8 @@ static bool BMV080Cmd(void) {
 static void BMV080_Detect(void) {
   for (uint8_t bus = 0; bus < 2; bus++) {
     if (!I2cSetDevice(BMV080_ADDR, bus)) continue;
-    if (BMV080_Init(BMV080_ADDR, bus)) { I2cSetActiveFound(BMV080_ADDR, "BMV080", bus); break; }
+    BMV.bus = bus;
+    if (BMV080_Open()) { I2cSetActiveFound(BMV080_ADDR, "BMV080", bus); break; }
   }
 }
 
