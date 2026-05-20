@@ -56,6 +56,9 @@ def _lazy_be_jsonlib():
 def _lazy_be_mathlib():
     import berry_port.be_mathlib as m; return m
 
+def _lazy_be_timelib():
+    import berry_port.be_timelib as m; return m
+
 def _lazy_be_solidifylib():
     import berry_port.be_solidifylib as m; return m
 
@@ -373,8 +376,8 @@ def _introspect_m_fromptr(vm):
             # In the Python port, comptr values that are gc objects
             # can be restored. This is a best-effort translation.
             if hasattr(v, 'type') and hasattr(v, 'marked'):
-                top_val = be_api.be_incrtop(vm)
-                be_obj.var_setobj(top_val, v.type, v)
+                top_idx = be_api.be_incrtop(vm)
+                be_obj.var_setobj(vm.stack[top_idx], v.type, v)
             else:
                 be_api.be_raise(vm, "value_error", "unsupported for this type")
             return be_api.be_returnvalue(vm)
@@ -522,17 +525,26 @@ def _debug_m_caller(vm):
     be_obj = _lazy_be_object()
     be_vec = _lazy_be_vector()
     depth = 1
-    if be_api.be_top(vm) >= 1 and be_api.be_isint(vm, 1):
-        depth = be_api.be_toint(vm, 1)
-        if depth < 0:
-            depth = -depth
     count = be_vec.be_stack_count(vm.callstack)
+    if be_api.be_top(vm) >= 1 and be_api.be_isint(vm, 1):
+        d = be_api.be_toint(vm, 1)
+        # clamp |d| to the live frame count. Comparing d against -count
+        # first lets us safely negate only values that fit, avoiding the
+        # -INT_MIN sign-flip undefined behavior in the C implementation.
+        # Python ints are unbounded, but we mirror the same semantic so an
+        # oversized depth does not index arbitrarily far out of the stack.
+        if d < -count or d > count:
+            depth = count
+        elif d < 0:
+            depth = -d
+        else:
+            depth = d
     cf_idx = count - 1 - depth
     if cf_idx >= 0:
         cf = be_vec.be_vector_at(vm.callstack, cf_idx)
-        reg = be_api.be_incrtop(vm)
+        reg_idx = be_api.be_incrtop(vm)
         func_val = cf.func if isinstance(cf.func, be_obj.bvalue) else vm.stack[cf.func]
-        be_obj.var_setval(reg, func_val)
+        be_obj.var_setval(vm.stack[reg_idx], func_val)
         return be_api.be_returnvalue(vm)
     return be_api.be_returnnilvalue(vm)
 
@@ -718,6 +730,10 @@ def _build_math_module_table():
 def _build_math_module_constants():
     """Build the math module constant attributes."""
     return _lazy_be_mathlib().be_math_module_constants()
+
+def _build_time_module_table():
+    """Build the time module attribute table (from be_timelib.c)."""
+    return _lazy_be_timelib().be_time_module_table()
 
 def _build_solidify_module_table():
     """Build the solidify module attribute table (from be_solidifylib.c)."""
@@ -931,6 +947,7 @@ def _register_module_table():
     """
     from berry_port.berry_conf import (
         BE_USE_STRING_MODULE, BE_USE_JSON_MODULE, BE_USE_MATH_MODULE,
+        BE_USE_TIME_MODULE,
         BE_USE_OS_MODULE, BE_USE_RE_MODULE, BE_USE_SYS_MODULE,
         BE_USE_GLOBAL_MODULE, BE_USE_DEBUG_MODULE, BE_USE_GC_MODULE,
         BE_USE_SOLIDIFY_MODULE, BE_USE_INTROSPECT_MODULE,
@@ -963,6 +980,8 @@ def _register_module_table():
 
     # Note: time module is not ported (platform-specific)
     # #if BE_USE_TIME_MODULE ... #endif
+    if BE_USE_TIME_MODULE:
+        _register_native_module("time", _build_time_module_table())
 
     # #if BE_USE_OS_MODULE
     #     &be_native_module(os),
@@ -1023,8 +1042,13 @@ def _register_module_table():
     # &be_native_module(undefined),  /* always registered */
     _register_native_module("undefined", _build_undefined_module_table())
 
-    # Note: preproc module not registered here — preprocessor is handled
-    # internally by the lexer.
+    # #if BE_USE_PREPROCESSOR
+    #     &be_native_module(preproc),
+    # #endif
+    from berry_port.berry_conf import BE_USE_PREPROCESSOR
+    if BE_USE_PREPROCESSOR:
+        from berry_port import be_preproclib as _be_preproclib
+        _register_native_module("preproc", _be_preproclib.be_preproc_module_table())
 
 
 # ============================================================================

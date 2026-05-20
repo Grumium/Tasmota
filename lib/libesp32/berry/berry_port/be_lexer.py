@@ -257,14 +257,13 @@ class blexer:
     #     bppstate ppstack[BE_PREPROC_MAX_DEPTH];
     #     int ppdepth;
     #     bbool pp_at_line_start;
-    #     bbool pp_translatable_ready;
     #     bbool pp_hash_consumed;
     # } blexer;
     __slots__ = (
         'fname', 'token', 'linenumber', 'lastline', 'cacheType',
         'buf', 'reader', 'strtab', 'vm', 'had_whitespace',
         'ppstack', 'ppdepth', 'pp_at_line_start',
-        'pp_translatable_ready', 'pp_hash_consumed',
+        'pp_hash_consumed',
     )
     def __init__(self):
         self.fname = None
@@ -281,7 +280,6 @@ class blexer:
         self.ppstack = [bppstate() for _ in range(BE_PREPROC_MAX_DEPTH)]
         self.ppdepth = -1
         self.pp_at_line_start = True
-        self.pp_translatable_ready = False
         self.pp_hash_consumed = False
 
 
@@ -919,7 +917,7 @@ def _tr_string(lexer):
             be_lexerror(lexer, "unfinished string")
         elif c == ord('\\'):
             if i >= src_len:
-                be_lexerror(lexer, "unfinished string")
+                be_lexerror(lexer, "invalid escape sequence")
             nc = src[i]
             if nc != ord('u'):
                 escape_map = {
@@ -934,19 +932,26 @@ def _tr_string(lexer):
                     dst.append(escape_map[nc])
                     i += 1
                 elif nc == ord('x'):
+                    # Mirror C: need 'x' + 2 hex digits before end of buffer.
+                    if src_len - i < 3:
+                        be_lexerror(lexer, "invalid hexadecimal number")
                     i += 1  # skip 'x'
                     c = _read_hex(lexer, src, i)
                     dst.append(c & 0xFF)
                     i += 2
                 else:
-                    # Octal escape
+                    # Octal escape \OOO (always 3 digits in C).
+                    # In C, read_oct always reads 3 digits or raises; the
+                    # caller then advances src by 3 total (src += 2; ++src).
+                    if src_len - i < 3:
+                        be_lexerror(lexer, "invalid octal number")
                     c = _read_oct(lexer, src, i)
-                    if c != 0:
-                        i += 2
                     dst.append(c & 0xFF)
-                    i += 1
+                    i += 3  # skip all 3 octal digits
             else:
-                # Unicode escape \uXXXX
+                # Unicode escape \uXXXX — need 'u' + 4 hex digits.
+                if src_len - i < 5:
+                    be_lexerror(lexer, "incorrect '\\u' encoding")
                 utf8_bytes = be_load_unicode(src, i + 1)
                 if utf8_bytes is None:
                     be_lexerror(lexer, "incorrect '\\u' encoding")
@@ -959,7 +964,11 @@ def _tr_string(lexer):
     # Copy result back into buffer
     for j in range(len(dst)):
         lexer.buf.s[j] = dst[j]
-    lexer.buf.len = len(dst)
+    # Truncate at first NULL byte to match C behavior (see tr_string in be_lexer.c):
+    #   const char* found = memchr(str, '\0', len);
+    #   lexer->buf.len = found ? (size_t)(found - str) : len;
+    null_idx = dst.find(b'\x00')
+    lexer.buf.len = null_idx if null_idx != -1 else len(dst)
 
 
 # ============================================================================
@@ -1169,43 +1178,44 @@ def _scan_numeral(lexer):
 # String scanning (from be_lexer.c)
 # ============================================================================
 
+# static void scan_one_literal(blexer *lexer)
+def _scan_one_literal(lexer):
+    """Scan a single string literal from opening to closing quote,
+    appending raw (un-escaped) bytes to the lexer buffer.  The caller
+    is responsible for calling _tr_string() later to process escapes.
+    """
+    end = _lgetc(lexer)  # string delimiter, '"' or "'"
+    _next(lexer)  # skip opening quote
+    while True:
+        c = _lgetc(lexer)
+        if c == 0 or c == end:
+            break
+        _save(lexer)
+        if c == ord('\\'):
+            _save(lexer)
+    if c == 0:
+        be_lexerror(lexer, "unfinished string")
+    _next(lexer)  # skip closing quote
+
+
+# static void scan_string_continue(blexer *lexer)
+def _scan_string_continue(lexer):
+    """Pick up any adjacent string literals and append their raw bytes
+    to the buffer.  Used to implement string-literal concatenation,
+    shared between _scan_string and _pp_scan_translatable."""
+    _skip_delimiter(lexer)
+    c = _lgetc(lexer)
+    while c == ord('"') or c == ord("'"):
+        _scan_one_literal(lexer)
+        _skip_delimiter(lexer)
+        c = _lgetc(lexer)
+
+
 # static btokentype scan_string(blexer *lexer)
 def _scan_string(lexer):
     """Scan a string literal (single or double quoted), handling concatenation."""
-    while True:
-        end = _lgetc(lexer)  # string delimiter
-        _next(lexer)  # skip opening quote
-        while True:
-            c = _lgetc(lexer)
-            if c == 0 or c == end:
-                break
-            _save(lexer)
-            if c == ord('\\'):
-                _save(lexer)
-        if c == 0:
-            be_lexerror(lexer, "unfinished string")
-        c = _next(lexer)  # skip closing quote
-
-        if BE_USE_PREPROCESSOR:
-            if c == ord('#'):
-                _next(lexer)  # consume '#'
-                if _is_ident_start(_lgetc(lexer)):
-                    lexer.pp_translatable_ready = True
-                    break
-                # Not translatable — treat as comment
-                _skip_comment_body(lexer)
-                _skip_delimiter(lexer)
-                c = _lgetc(lexer)
-                if c != ord('"') and c != ord("'"):
-                    break
-                continue
-
-        # Check for adjacent string literal (concatenation)
-        _skip_delimiter(lexer)
-        c = _lgetc(lexer)
-        if c != ord('"') and c != ord("'"):
-            break
-
+    _scan_one_literal(lexer)
+    _scan_string_continue(lexer)
     _tr_string(lexer)
     _setstr(lexer, _buf_tostr(lexer))
     return TokenString
@@ -1871,22 +1881,149 @@ def _pp_process_directive(lexer):
     return True
 
 
-# static void pp_scan_translatable(blexer *lexer)
+# /*
+#  * Translatable string expression: $IDENT"..." or $IDENT'...'.
+#  *
+#  * Called from the top-level dispatch in lexer_next() after '$' has
+#  * been consumed.  The cursor is positioned on the character
+#  * immediately following '$'.
+#  *
+#  * Reads the identifier (the macro name), scans the following string
+#  * literal via scan_string(), and substitutes the macro's string
+#  * replacement value if defined (otherwise emits the default text).
+#  *
+#  * Reports "stray '$' in program" if '$' is not immediately followed
+#  * by an identifier and then a string quote (no intervening whitespace
+#  * permitted).  Returns TokenString on success.
+#  */
+# static btokentype pp_scan_translatable(blexer *lexer)
+# {
+#     int namelen;
+#     int quote;
+#     btokentype type;
+#     bvalue *val;
+#     bstring *name;
+#
+#     /* The character after '$' must be an identifier-start character
+#      * (letter or underscore); otherwise it's a stray '$'. */
+#     if (!is_ident_start(lgetc(lexer))) {
+#         be_lexerror(lexer, "stray '$' in program");
+#         return TokenNone;
+#     }
+#
+#     /* Read the macro name into the lexer buffer. */
+#     namelen = pp_read_ident(lexer);
+#
+#     /* The character immediately following the identifier must be an
+#      * opening string quote (no whitespace allowed). */
+#     quote = lgetc(lexer);
+#     if (quote != '\'' && quote != '"') {
+#         be_lexerror(lexer, "stray '$' in program");
+#         return TokenNone;
+#     }
+#
+#     /* Intern the macro name as a string before scan_string() reuses
+#      * the lexer buffer.  Keep it GC-protected on the stack. */
+#     name = be_newstrn(lexer->vm, lexbuf(lexer), namelen);
+#     var_setstr(lexer->vm->top, name);
+#     be_stackpush(lexer->vm);
+#
+#     /* scan_string() expects the buffer to be empty and the cursor
+#      * on the opening quote. */
+#     clear_buf(lexer);
+#     type = scan_string(lexer);
+#
+#     /* Look up the macro.  If defined with a BE_STRING value, replace
+#      * the token's string with the macro's replacement; otherwise keep
+#      * the default text set by scan_string(). */
+#     val = pp_find_macro(lexer, str(name), str_len(name));
+#     if (val && var_isstr(val)) {
+#         setstr(lexer, var_tostr(val));
+#     }
+#
+#     be_stackpop(lexer->vm, 1); /* release GC protection for macro name */
+#     return type;
+# }
 def _pp_scan_translatable(lexer):
-    """After scan_string, check for translatable string ("text"#MACRO).
+    """Translatable string expression: $IDENT"..." or $IDENT'...' or $IDENT.
 
-    If pp_translatable_ready is set, '#' was already consumed and lgetc
-    is the first character of the macro identifier.
+    Cursor is positioned on the character immediately following '$'.
+    Reads the identifier (macro name), then handles one of three cases:
+
+    - '$IDENT"default"' or "$IDENT'default'": scan one literal, process
+      escapes, replace the default text with the macro's value if the
+      macro is defined as a string, then concatenate any adjacent
+      string literals that follow.
+    - '$IDENT' with no following quote: emit the macro's string value
+      if defined as a string, else raise 'stray $'.
+
+    Raises 'stray \'$\' in program' if '$' is not followed by an
+    identifier. Returns TokenString on success.
     """
-    if not lexer.pp_translatable_ready:
-        return
-    lexer.pp_translatable_ready = False
+    from berry_port.be_strlib import be_strcat
 
-    length = _pp_read_ident(lexer)
-    name = lexer.buf.s[:length].decode('latin-1')
-    val = _pp_find_macro(lexer, name, length)
+    # (a) The character after '$' must be an identifier-start character
+    if not _is_ident_start(_lgetc(lexer)):
+        be_lexerror(lexer, "stray '$' in program")
+        return TokenNone
+
+    # (b) Read the macro name into the lexer buffer
+    namelen = _pp_read_ident(lexer)
+
+    # Intern the macro name and keep it GC-protected on the stack so
+    # it survives buffer reuse and subsequent allocations.
+    vm = lexer.vm
+    name_str = lexer.buf.s[:namelen].decode('latin-1')
+    name = be_newstrn(vm, name_str, namelen)
+    _ensure_stack_slot(vm)
+    var_setstr(vm.stack[vm.top_idx], name)
+    _be_stackpush(vm)
+
+    val = _pp_find_macro(lexer, name_str, namelen)
+
+    quote = _lgetc(lexer)
+    if quote != ord("'") and quote != ord('"'):
+        # '$IDENT' with no quote: emit macro value if defined as
+        # string, else stray '$'.
+        if val is not None and var_isstr(val):
+            _setstr(lexer, var_tostr(val))
+            _be_stackpop(vm, 1)
+            return TokenString
+        _be_stackpop(vm, 1)
+        be_lexerror(lexer, "stray '$' in program")
+        return TokenNone
+
+    # Scan one literal and process escapes.
+    _clear_buf(lexer)
+    _scan_one_literal(lexer)
+    _tr_string(lexer)
     if val is not None and var_isstr(val):
-        _setstr(lexer, var_tostr(val))
+        head = var_tostr(val)
+    else:
+        head = _buf_tostr(lexer)
+
+    # Keep head alive across further allocations.
+    _ensure_stack_slot(vm)
+    var_setstr(vm.stack[vm.top_idx], head)
+    _be_stackpush(vm)
+
+    # Concatenate any adjacent string literals, processing each one's
+    # escapes independently.
+    _skip_delimiter(lexer)
+    c = _lgetc(lexer)
+    while c == ord('"') or c == ord("'"):
+        _clear_buf(lexer)
+        _scan_one_literal(lexer)
+        _tr_string(lexer)
+        seg = _buf_tostr(lexer)
+        head = be_strcat(vm, var_tostr(vm.stack[vm.top_idx - 1]), seg)
+        var_setstr(vm.stack[vm.top_idx - 1], head)
+        _skip_delimiter(lexer)
+        c = _lgetc(lexer)
+
+    _setstr(lexer, var_tostr(vm.stack[vm.top_idx - 1]))
+    _be_stackpop(vm, 2)  # release head and macro name
+    return TokenString
 
 
 # ============================================================================
@@ -2062,9 +2199,29 @@ def _lexer_next(lexer):
         # --- Strings ---
         if c == ord("'") or c == ord('"'):
             tok_type = _scan_string(lexer)
-            if BE_USE_PREPROCESSOR:
-                _pp_scan_translatable(lexer)
             return tok_type
+
+        # --- Translatable string expression: $IDENT"..." or $IDENT'...' ---
+        # #if BE_USE_PREPROCESSOR
+        #         case '$':
+        #             /* Translatable string expression: $IDENT"..." or $IDENT'...'.
+        #              * Consume the '$' and dispatch to pp_scan_translatable(),
+        #              * which reads the identifier, scans the string literal, and
+        #              * substitutes the macro's replacement value if defined.
+        #              * A stray '$' (not followed by IDENT and a quote) raises
+        #              * a syntax error. */
+        #             next(lexer); /* consume '$' */
+        #             lexer->pp_at_line_start = bfalse;
+        #             return pp_scan_translatable(lexer);
+        # #endif
+        if c == ord('$'):
+            if BE_USE_PREPROCESSOR:
+                _next(lexer)  # consume '$'
+                lexer.pp_at_line_start = False
+                return _pp_scan_translatable(lexer)
+            # Without preprocessor support, '$' is not a valid Berry character.
+            be_lexerror(lexer, "stray '$' in program")
+            return TokenNone
 
         # --- Dot / connect / real starting with dot ---
         if c == ord('.'):
@@ -2115,7 +2272,6 @@ def _lexerbuf_init(lexer):
 #     lexer->had_whitespace = 1;
 #     lexer->ppdepth = -1;
 #     lexer->pp_at_line_start = btrue;
-#     lexer->pp_translatable_ready = bfalse;
 #     lexer->pp_hash_consumed = bfalse;
 #     lexerbuf_init(lexer);
 #     keyword_registe(vm);
@@ -2146,7 +2302,6 @@ def be_lexer_init(lexer, vm, fname, reader, data):
     if BE_USE_PREPROCESSOR:
         lexer.ppdepth = -1
         lexer.pp_at_line_start = True
-        lexer.pp_translatable_ready = False
         lexer.pp_hash_consumed = False
     _lexerbuf_init(lexer)
     _keyword_register(vm)
