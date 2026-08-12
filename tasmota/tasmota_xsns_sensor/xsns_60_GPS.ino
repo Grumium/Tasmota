@@ -132,6 +132,9 @@ const char kUBXTypes[] PROGMEM = "UBX";
 #define UBX_TCP_PORT           1234
 #define NTP_MILLIS_OFFSET      50              // estimated latency in milliseconds
 
+#define UBX_PPS_MAX_AGE        850             // ms, must stay well below one second
+#define UBX_PPS_MIN_AGE        5               // ms, below the UART message delay
+
 /********************************************************************************************\
 | *globals
 \*********************************************************************************************/
@@ -283,6 +286,8 @@ struct UBX_t {
     uint8_t non_empty_loops;   // in case of an unintended reset of the GPS, the serial interface will get flooded with NMEA
     uint16_t log_interval;     // in tenth of seconds
     int32_t timeOffset;        // roughly computed offset millis() - iTOW
+    uint32_t ppsCount;         // number of PPS edges seen, for UI/diagnostics
+    int32_t ppsAge;            // age in ms of the PPS edge used for the last sync, -1 = PPS not used
   } state;
 
   struct {
@@ -294,6 +299,9 @@ struct UBX_t {
     // uint32_t blockedNTP:1;
     uint32_t forceUTCupdate:1;
     uint32_t runningVPort:1;
+    uint32_t hasPPS:1;         // PPS pin configured and interrupt attached
+    uint32_t fastNTP:1;        // serve NTP from the main loop rather than the 50 msec tick
+    uint32_t ppsLocked:1;      // last message was timed from a PPS edge, for transition logging
     // TODO: more to come
   } mode;
 
@@ -373,6 +381,15 @@ void UBXsendCFGLine(uint8_t _line)
 
 /********************************************************************************************/
 
+// Timestamp of the last PPS rising edge.
+volatile uint32_t UBXppsMillis = 0;
+volatile uint32_t UBXppsCount = 0;
+
+static void IRAM_ATTR UBXppsIsr(void) {
+  UBXppsMillis = millis();
+  UBXppsCount++;
+}
+
 void UBXDetect(void) {
   UBX.mode.init = 0;
   if (!(PinUsed(GPIO_GPS_RX, GPIO_ANY) && PinUsed(GPIO_GPS_TX))) { return; }
@@ -398,6 +415,14 @@ void UBXDetect(void) {
     Flog->init();
   }
 #endif  // USE_FLOG
+
+  UBX.state.ppsAge = -1;        // no PPS based sync yet
+  if (PinUsed(GPIO_GPS_PPS)) {
+    pinMode(Pin(GPIO_GPS_PPS), INPUT);
+    attachInterrupt(digitalPinToInterrupt(Pin(GPIO_GPS_PPS)), UBXppsIsr, RISING);
+    UBX.mode.hasPPS = 1;
+    AddLog(LOG_LEVEL_DEBUG, PSTR("UBX: PPS on GPIO%d"), Pin(GPIO_GPS_PPS));
+  }
 
   UBX.state.log_interval = 10;  // 1 second
   UBX.mode.send_UI_only = true; // send UI data ...
@@ -623,6 +648,7 @@ void UBXSelectMode(uint16_t mode)
     case 9:
       if (!TasmotaGlobal.global_state.network_down && timeServer.beginListening()) {
         UBX.mode.runningNTP = true;
+        UBX.mode.fastNTP = 0;
       }
       break;
     case 10:
@@ -653,6 +679,12 @@ void UBXSelectMode(uint16_t mode)
     case 15:
       // vPortServer.stop(); // seems not to work reliably
       UBX.mode.runningVPort = 0;
+      break;
+    case 16:
+      UBX.mode.fastNTP = 0;
+      break;
+    case 17:
+      UBX.mode.fastNTP = 1;
       break;
     default:
       if (mode>199 && mode <65000) {
@@ -730,7 +762,34 @@ void UBXHandleTIME()
   DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time: %u-%u-%u %u:%u:%u"), UBX.Message.navTime.year, UBX.Message.navTime.month ,UBX.Message.navTime.day,UBX.Message.navTime.hour,UBX.Message.navTime.min,UBX.Message.navTime.sec);
  if ((UBX.Message.navTime.valid.UTC == 1) && (UBX.Message.navTime.year >= 2023)) {
     UBX.state.timeOffset =  millis(); // iTOW%1000 should be 0 here, when NTP-server is enabled and in "pure mode"
-    AddLog(LOG_LEVEL_INFO, PSTR("UBX: %d %d"), UBX.state.timeOffset%1000, UBX.Message.navTime.iTOW%1000 );
+    UBX.state.ppsAge = -1;
+    // The message arrival above is late by the GPS solution latency plus UART and polling
+    // delay. When PPS is wired we know the exact start of this second instead, but only if
+    // the edge we hold really belongs to the second this message describes.
+    uint32_t pps_count = UBXppsCount;               // single atomic read, ISR may fire meanwhile
+    if (UBX.mode.hasPPS && (UBX.state.gpsFix > 1)) {
+      uint32_t pps = UBXppsMillis;
+      if (pps && (pps_count != UBX.state.ppsCount)) {
+        int32_t age = (int32_t)(UBX.state.timeOffset - pps);
+        if ((age >= UBX_PPS_MIN_AGE) && (age <= UBX_PPS_MAX_AGE)) {
+          UBX.state.timeOffset = pps;               // second started exactly at the edge
+          UBX.state.ppsAge = age;
+        }
+      }
+    }
+    if (UBX.state.ppsAge < 0) {
+      AddLog(LOG_LEVEL_INFO, PSTR("UBX: %d %d"), UBX.state.timeOffset%1000, UBX.Message.navTime.iTOW%1000 );
+    } else {
+      AddLog(LOG_LEVEL_INFO, PSTR("UBX: %d %d, PPS -%d ms"), UBX.state.timeOffset%1000, UBX.Message.navTime.iTOW%1000, UBX.state.ppsAge );
+    }
+    if (UBX.mode.hasPPS) {
+      bool pps_ok = (UBX.state.ppsAge >= 0);
+      if (pps_ok != (bool)UBX.mode.ppsLocked) {
+        UBX.mode.ppsLocked = pps_ok;
+        AddLog(LOG_LEVEL_INFO, PSTR("UBX: PPS %s"), pps_ok ? PSTR("locked") : PSTR("lost, using serial message time"));
+      }
+    }
+    UBX.state.ppsCount = pps_count;
     DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time is valid"));
     bool resync = (Rtc.utc_time > UBX.utc_time);  // Sync local time every hour
     if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate || UBX.mode.runningNTP || resync) {
@@ -783,9 +842,12 @@ void UBXLoop50msec(void)
       UBX.TCPbufSize = 0;
     }
   }
-  // handle NTP-server
+}
+
+void UBXHandleNTP(void)
+{
   if(!TasmotaGlobal.global_state.network_down && UBX.mode.runningNTP){
-    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset);// - NTP_MILLIS_OFFSET);
+    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset, UBX.mode.ppsLocked);
   }
 }
 
@@ -849,6 +911,7 @@ const char HTTP_BTN_FLOG_DL[] PROGMEM = "<button><a href='/UBX'>Download GPX-Fil
 #endif  // USE_FLOG
 
 const char HTTP_SNS_NTPSERVER[] PROGMEM = "{s}GPS NTP server{m}Active{e}";
+const char HTTP_SNS_NTPPPS[] PROGMEM = "{s}GPS NTP server{m}Active (PPS %d ms){e}";
 
 const char HTTP_SNS_GPS[] PROGMEM = "{s}GPS " D_SAT_FIX "{m}%s{e}"
                                     "{s}GPS " D_LATITUDE "{m}%s{e}"
@@ -945,7 +1008,11 @@ void UBXShow(bool json) {
 
     if (UBX.mode.runningNTP) {
       WSContentSeparator(0);
-      WSContentSend_P(HTTP_SNS_NTPSERVER);
+      if (UBX.state.ppsAge >= 0) {
+        WSContentSend_P(HTTP_SNS_NTPPPS, UBX.state.ppsAge);
+      } else {
+        WSContentSend_P(HTTP_SNS_NTPSERVER);
+      }
     }
 
 #endif  // USE_WEBSERVER
@@ -985,8 +1052,13 @@ bool Xsns60(uint32_t function)
           result = UBXCmd();
         }
         break;
+      case FUNC_LOOP:
+      case FUNC_SLEEP_LOOP:
+        if (UBX.mode.fastNTP) { UBXHandleNTP(); }
+        break;
       case FUNC_EVERY_50_MSECOND:
-        UBXLoop50msec(); // handles virtual serial port and NTP server
+        if (!UBX.mode.fastNTP) { UBXHandleNTP(); }   // answer before the virtual serial port
+        UBXLoop50msec();
         break;
       case FUNC_EVERY_100_MSECOND:
 #ifdef USE_FLOG

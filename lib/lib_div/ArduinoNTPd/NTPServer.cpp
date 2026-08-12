@@ -23,14 +23,11 @@ bool NtpServer::beginListening()
   return false;
 }
 
-bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs)
+bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs, bool pps)
 {
   // millisecs is millis() at the time of the last iTOW reception, where iTOW%1000 == 0
-  uint32_t refMillis = millis()-millisecs;
-  //if (refMillis>999){
-  //  utc++;
-    refMillis = refMillis%1000;
-  //}
+  uint32_t elapsed = millis()-millisecs;
+  uint32_t refMillis = elapsed%1000;
 
   bool processed = false;
 
@@ -38,7 +35,7 @@ bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs)
   if (packetDataSize && packetDataSize >= NtpPacket::PACKET_SIZE)
   {
       // We need the time we've received the packet in our response.
-      uint32_t recvSecs =  utc + NTP_TIMESTAMP_DIFF;
+      uint32_t recvSecs =  utc + NTP_TIMESTAMP_DIFF + (elapsed / 1000);
 
       uint64_t recvFract64 = refMillis;
       recvFract64 <<= 32;
@@ -60,9 +57,14 @@ bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs)
       packet.mode(4);
       packet.stratum = 1; // >1 will lead to misinterpretation of refId
       packet.poll = 10; // 6-10 per RFC 5905.
-      packet.precision = -21; // ~0.5 microsecond precision.
-      packet.rootDelay = 100 * (0xFFFF / 1000); //~100 milliseconds
-      packet.rootDispersion = 50 * (0xFFFF / 1000);; //~50 millisecond dispersion
+      packet.precision = -10; // millisecond precision is enough
+      if (pps) {
+        packet.rootDelay = 0;
+        packet.rootDispersion = 2 * (0xFFFF / 1000); //~2 milliseconds
+      } else {
+        packet.rootDelay = 100 * (0xFFFF / 1000); //~100 milliseconds
+        packet.rootDispersion = 50 * (0xFFFF / 1000);; //~50 millisecond dispersion
+      }
       packet.referenceId[0] = 'G';
       packet.referenceId[1] = 'P';
       packet.referenceId[2] = 'S';

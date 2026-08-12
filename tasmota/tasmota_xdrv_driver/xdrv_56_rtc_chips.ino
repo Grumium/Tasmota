@@ -1059,7 +1059,7 @@ void RtcChipEverySecond(void) {
         AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: NTP server started"));
       }
     } else {
-      RtcChipTimeServer.processOneRequest(Rtc.utc_time, NTP_MILLIS_OFFSET);
+      RtcChipTimeServer.processOneRequest(Rtc.utc_time, Rtc.millis);
     }
   }
 }

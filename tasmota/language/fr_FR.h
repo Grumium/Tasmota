@@ -924,6 +924,7 @@
 #define D_SENSOR_CLIENT_RESET  "Esclave RST"
 #define D_SENSOR_GPS_RX        "GPS Rx"
 #define D_SENSOR_GPS_TX        "GPS Tx"
+#define D_SENSOR_GPS_PPS       "GPS PPS"
 #define D_SENSOR_HM10_RX       "HM10 Rx"
 #define D_SENSOR_HM10_TX       "HM10 Tx"
 #define D_SENSOR_LE01MR_RX     "LE-01MR Rx"

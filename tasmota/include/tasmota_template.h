@@ -239,6 +239,7 @@ enum UserSelectablePins {
   GPIO_VID6608_F, GPIO_VID6608_CW,      // VID6608
   GPIO_MKSKYBLU_TX, GPIO_MKSKYBLU_RX,   // MakeSkyBlue solar charge controller
   GPIO_MBS_RX_ENA,                      // Modbus Bridge Serial Receive Enable
+  GPIO_GPS_PPS,                         // GPS pulse per second for NTP server time base
   GPIO_SENSOR_END };
 
 // Error as warning to rethink GPIO usage with max 2045
@@ -519,7 +520,8 @@ const char kSensorNames[] PROGMEM =
 #endif
   D_VID6608_F "|" D_VID6608_CW "|"
   D_SENSOR_MKSKYBLU_TX "|" D_SENSOR_MKSKYBLU_RX "|"
-  D_SENSOR_MBS_RX_ENA "|" 
+  D_SENSOR_MBS_RX_ENA "|"
+  D_SENSOR_GPS_PPS "|"
 ;
 
 const char kSensorNamesFixed[] PROGMEM =
@@ -1121,6 +1123,7 @@ const uint16_t kGpioNiceList[] PROGMEM = {
 #ifdef USE_GPS
   AGPIO(GPIO_GPS_TX),                            // GPS serial interface
   AGPIO(GPIO_GPS_RX) + AGMAX(MAX_GPS_RX),        // GPS serial interface
+  AGPIO(GPIO_GPS_PPS),                           // GPS pulse per second
 #endif
 #ifdef USE_HM10
   AGPIO(GPIO_HM10_TX),                           // HM10 serial interface
