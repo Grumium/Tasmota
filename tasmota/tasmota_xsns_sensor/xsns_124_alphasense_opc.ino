@@ -193,6 +193,15 @@ uint8_t opc_count = 0;
 uint8_t opc_idx   = 0;
 #define OPC opc[opc_idx]
 
+// Maps the type bit in mode (N2=1, N3=2, R1=4, R2=8) to the matching column
+// index in OPCCommand[].val, or -1 while no type is known. The type bits are
+// cleared on reset, so ctz() must never run on a zero mask.
+int8_t OPCTypeIndex(void) {
+  uint8_t type_bits = OPC.mode & 0x0F;
+  if (!type_bits) { return -1; }
+  return __builtin_ctz(type_bits);
+}
+
 const char* OPCReplaceDotWithUnderscore(const char* input) {
   static char buffer[FLOATSZ];
   strlcpy(buffer, input, sizeof(buffer));
@@ -260,18 +269,20 @@ void OPCAllocateMem(uint32_t type) {
 bool OPCInit(void) {
   uint8_t regInfo = pgm_read_byte(&OPCCommand[OPC_READ_INFO].reg);
   uint8_t lenInfo = pgm_read_byte(&OPCCommand[OPC_READ_INFO].val[0]);
-  unsigned char info[60];
+  unsigned char info[61] = { 0 };   // one extra byte, strstr() needs termination
   if (!OPCHandleData(regInfo, 0xF3, lenInfo, info)) {
     return false;
   }
+  info[lenInfo] = '\0';
 
   for (uint32_t i = 0; i < 4; i++) {
     GetTextIndexed(OPC.types, sizeof(OPC.types), i, kOPC_Types);
     if (strstr((const char*)info, OPC.types) != NULL) {
-      AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d found %s"), D_CMND_OPC, opc_idx + 1, OPC.types);
+      AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d found %s on CS pin %d"),
+             D_CMND_OPC, opc_idx + 1, OPC.types, OPC.cs_pin);
       OPC.mode |= (1 << i);
       return true;
-    }   
+    }
   }
   return false;
 }
@@ -360,7 +371,11 @@ void OPCLoop(void) {
         FORMAT_PM_DIA(OPC.config.pm_dia_a, OPC.data.pm.dia_a);
         FORMAT_PM_DIA(OPC.config.pm_dia_b, OPC.data.pm.dia_b);
         FORMAT_PM_DIA(OPC.config.pm_dia_c, OPC.data.pm.dia_c);
-        MqttPublishSensor();
+        {                              // OPCShow() clobbers opc_idx, see below
+          uint8_t saved_idx = opc_idx;
+          MqttPublishSensor();
+          opc_idx = saved_idx;
+        }
         continue;
       }
     }
@@ -369,8 +384,12 @@ void OPCLoop(void) {
         OPC.setmode ^= OPC_STATUS; 
         DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: READ STATUS TO STRUCT"));
         OPCReadDataToStruct(OPC_READ_STATUS); // if boolean, then successful change mode.
-        OPC.mode ^= OPC_STATUS; 
-        MqttPublishSensor();
+        OPC.mode ^= OPC_STATUS;
+        {                              // OPCShow() clobbers opc_idx, see below
+          uint8_t saved_idx = opc_idx;
+          MqttPublishSensor();
+          opc_idx = saved_idx;
+        }
         continue;
       }
     }
@@ -416,7 +435,8 @@ void OPCLoop(void) {
       if (diff & OPC_PMHIST) {
         OPC.mode ^= OPC_PMHIST;
         if ((OPC.mode & OPC_PMHIST)) {
-          OPCAllocateMem(__builtin_ctz(OPC.mode & 0x0F));
+          int8_t type = OPCTypeIndex();
+          if (type >= 0) { OPCAllocateMem(type); }
         }
       }
       if ((OPC.mode & 0x60) == 0x60) { //fan on and laser on?
@@ -426,9 +446,14 @@ void OPCLoop(void) {
           OPCReadDataToStruct(OPC_READ_HIST);
         }  
       } 
-      OPCProcessMeasurements(); 
+      OPCProcessMeasurements();
       if ((OPC.data.isFirst))  {
+        // MqttPublishSensor() ends up in OPCShow(), which runs its own loop
+        // over opc_idx and leaves it at opc_count. Without saving it here the
+        // enclosing for loop terminates and every later sensor is skipped.
+        uint8_t saved_idx = opc_idx;
         MqttPublishSensor();
+        opc_idx = saved_idx;
       }
     }
   }
@@ -439,9 +464,14 @@ void OPCReadDataToStruct(OPC_CommandCodes_t cmd) {
     AddLog(LOG_LEVEL_ERROR, PSTR("%s: Invalid read command %d"), D_CMND_OPC, cmd);
     return;
   }
+  int8_t type = OPCTypeIndex();
+  if (type < 0) {
+    AddLog(LOG_LEVEL_ERROR, PSTR("%s: no sensor type, skipping read cmd %d"), D_CMND_OPC, cmd);
+    return;
+  }
   uint8_t reg, len;
   reg = pgm_read_byte(&OPCCommand[cmd].reg); //   memcpy_P(&reg, &OPCCommand[cmd].reg, sizeof(uint8_t)); 
-  len = pgm_read_byte(&OPCCommand[cmd].val[__builtin_ctz(OPC.mode & 0x0F)]); // memcpy_P(&len, &OPCCommand[cmd].val[OPC.type], sizeof(uint8_t));
+  len = pgm_read_byte(&OPCCommand[cmd].val[type]); // memcpy_P(&len, &OPCCommand[cmd].val[OPC.type], sizeof(uint8_t));
   if (len == 0) {
     AddLog(LOG_LEVEL_ERROR, PSTR("%s: Invalid read command %d (len=%u)"), D_CMND_OPC, cmd, len);
     return;
@@ -500,7 +530,7 @@ void HandleOPCAction(void) {
 
 class SpiGuard {
 public:
-  explicit SpiGuard(uint32_t clk_hz = 400'000UL) {
+  explicit SpiGuard(uint32_t clk_hz = 420'000UL) {
     SPI.beginTransaction(SPISettings(clk_hz, MSBFIRST, SPI_MODE1));
     digitalWrite(OPC.cs_pin, LOW);           // CS aktiv (0)
   }
@@ -548,13 +578,17 @@ bool OPCHandleData(uint8_t reg, uint8_t cmd, uint8_t count, uint8_t* bytes)
 }
 
 void OPCWriteControl(OPC_CommandCodes_t cmd) {
-  uint8_t type = __builtin_ctz(OPC.mode & 0x0F);
+  int8_t type = OPCTypeIndex();
+  if (type < 0) {
+    AddLog(LOG_LEVEL_ERROR, PSTR("%s: no sensor type, skipping write cmd %d"), D_CMND_OPC, cmd);
+    return;
+  }
   uint8_t reg  = pgm_read_byte(&OPCCommand[cmd].reg);
   uint8_t val  = pgm_read_byte(&OPCCommand[cmd].val[type]);
-  AddLog(LOG_LEVEL_INFO, PSTR("%s: Writing 0x%02X to reg 0x%02X (type=%u)"), D_CMND_OPC, val, reg, type);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("%s: OPC-%d writing 0x%02X to reg 0x%02X (type=%u)"), D_CMND_OPC, opc_idx + 1, val, reg, type);
   unsigned char ret;
   OPCHandleData(reg, val, 1, &ret);
-  AddLog(LOG_LEVEL_INFO, PSTR("%s: returned 0x%02X"), D_CMND_OPC, ret);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("%s: OPC-%d returned 0x%02X"), D_CMND_OPC, opc_idx + 1, ret);
 }
 
 bool OPCCmd(void)
@@ -585,12 +619,13 @@ bool OPCCmd(void)
 
 void OPCSelectMode(uint16_t mode)
 {
-  DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("OPC: set mode to %u"),mode);
+  DEBUG_SENSOR_LOG(LOG_LEVEL_INFO, PSTR("%s: OPC-%d set mode to %u"), D_CMND_OPC, opc_idx + 1, mode);
 
   if (mode > 999) {
-    OPC.interval = mode / 1000;
-    AddLog(LOG_LEVEL_INFO, PSTR("OPC: Set period to %d sec"), OPC.interval);
-    return;  // Keine weitere Modusverarbeitung, wenn ein Intervall gesetzt wurde
+    OPC.interval    = mode / 1000;
+    OPC.setinterval = OPC.interval;  // keep it across an OPC_OVERRIDE round trip
+    AddLog(LOG_LEVEL_INFO, PSTR("%s: OPC-%d set period to %d sec"), D_CMND_OPC, opc_idx + 1, OPC.interval);
+    return; 
   }
 
   switch(mode){
