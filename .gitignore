@@ -64,6 +64,8 @@ venv
 .venv
 lib/lib_i2c/BMV080/src/esp32/lib_bmv080.a
 lib/lib_i2c/BMV080/src/esp32/lib_postProcessor.a
+lib/lib_i2c/BMV080/src/esp32s3/lib_bmv080.a
+lib/lib_i2c/BMV080/src/esp32s3/lib_postProcessor.a
 lib/lib_i2c/BMV080/src/sfTk/bmv080.h
 lib/lib_i2c/BMV080/src/sfTk/bmv080_defs.h
 lib/lib_i2c/BME68x/src/esp32/libalgobsec.a
@@ -72,3 +74,7 @@ lib/lib_i2c/BME68x/src/inc/bsec_datatypes.h
 lib/lib_i2c/BME68x/src/bsec.h
 lib/lib_i2c/BME68x/src/bsec.cpp
 lib/lib_i2c/BME68x/src/bsec_interface.c
+
+lib/lib_i2c/BMV080/src/esp32.esp32-orig-DO-NOT-LINK/README-DO-NOT-LINK.txt
+lib/lib_i2c/BMV080/src/esp32.esp32-orig-DO-NOT-LINK/lib_postProcessor.a
+lib/lib_i2c/BMV080/src/esp32.esp32-orig-DO-NOT-LINK/lib_bmv080.a
