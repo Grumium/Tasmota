@@ -887,9 +887,12 @@ extern "C" {
   static const uint16_t suites[] = {
     BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
     BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
   };
   static const uint16_t suites_RSA_ONLY[] = {
     BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
   };
 
   // Default initializion for our SSL clients
@@ -914,6 +917,10 @@ extern "C" {
     // install hashes
     br_ssl_engine_set_hash(&cc->eng, br_sha256_ID, &br_sha256_vtable);
     br_ssl_engine_set_prf_sha256(&cc->eng, &br_tls12_sha256_prf);
+    // SHA-384 required by the AES-256-GCM-SHA384 suites above (e.g. login.wifionice.de
+    // rejects every AES-128 suite); without hash+PRF the suite is offered but unusable
+    br_ssl_engine_set_hash(&cc->eng, br_sha384_ID, &br_sha384_vtable);
+    br_ssl_engine_set_prf_sha384(&cc->eng, &br_tls12_sha384_prf);
 
     // AES CTR/GCM small version, not contstant time (we don't really care here as there is no TPM anyways)
     br_ssl_engine_set_gcm(&cc->eng, &br_sslrec_in_gcm_vtable, &br_sslrec_out_gcm_vtable);

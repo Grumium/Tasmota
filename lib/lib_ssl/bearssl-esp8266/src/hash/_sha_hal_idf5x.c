@@ -50,8 +50,12 @@
 #define HAVE_HAL_SHA1    (SOC_SHA_SUPPORT_SHA1)
 #define HAVE_HAL_SHA224  (SOC_SHA_SUPPORT_SHA224)
 #define HAVE_HAL_SHA256  (SOC_SHA_SUPPORT_SHA256)
-#define HAVE_HAL_SHA384  (SOC_SHA_SUPPORT_SHA384)
-#define HAVE_HAL_SHA512  (SOC_SHA_SUPPORT_SHA512)
+// SHA-384/512 HAL disabled: the TLS record layer failed with bad_record_mac (alert 20)
+// against login.wifionice.de while SHA-256 suites kept working. Both must go together --
+// sha2big.c defines the 384 and 512 symbols in one unit, so leaving 512 on the HAL path
+// gives a duplicate-symbol link error.
+#define HAVE_HAL_SHA384  0
+#define HAVE_HAL_SHA512  0
 
 static portMUX_TYPE s_sha_mux = portMUX_INITIALIZER_UNLOCKED;
 #define SHA_ENTER()  {portENTER_CRITICAL(&s_sha_mux); int __DECLARE_RCC_ATOMIC_ENV; sha_ll_enable_bus_clock(true); sha_ll_reset_register(); sha_ll_set_mode(mode);}
