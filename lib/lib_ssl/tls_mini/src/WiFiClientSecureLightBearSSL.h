@@ -121,6 +121,10 @@ class WiFiClientSecure_light : public WiFiClient {
       }
     }
     int32_t getLastCipherSuite(void) {
+      // `_eng` is only set once _connectSSL() runs. If the TCP connect failed
+      // beforehand (ERR_TCP_CONNECT), it is still nullptr and dereferencing it
+      // panics with LoadProhibited. Callers already treat 0 as "nothing negotiated".
+      if (!_eng) { return 0; }
       return _eng->session.cipher_suite;
     }
     inline void setLastError(int32_t err) {
