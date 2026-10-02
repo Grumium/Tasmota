@@ -29,6 +29,8 @@
 
 #include "driver/rtc_io.h"
 #include "driver/gpio.h"
+#include "esp_sleep.h"
+#include "soc/soc_caps.h"
 
 #include "ulp_adc.h"
 #if defined(CONFIG_ULP_COPROC_TYPE_RISCV) // S2 or S3
@@ -88,6 +90,10 @@ extern "C" {
     if (rtc_gpio_is_valid_gpio(pin)){
       rtc_gpio_init(pin);
       rtc_gpio_set_direction(pin, mode);
+      if (mode == RTC_GPIO_MODE_INPUT_ONLY) {
+        rtc_gpio_pulldown_dis(pin);
+        rtc_gpio_pullup_dis(pin);
+      }
       return rtc_io_number_get(pin);
     } else {
       return -1;
@@ -148,6 +154,47 @@ extern "C" {
     }
   }
 
+#if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+  // Pin mask and level for an ext1 wakeup, armed by `ULP.ext1_wakeup()` and
+  // applied in `be_ULP_sleep()`. Zero mask means "not armed".
+  static uint64_t be_ulp_ext1_mask = 0;
+  static int32_t  be_ulp_ext1_level = 0;
+  // Set by `ULP.pd_rtc_periph()`; releases the domain only together with an
+  // armed ext1 mask.
+  static bbool    be_ulp_ext1_pd_periph = bfalse;
+#endif
+
+  // `ULP.ext1_wakeup(pin:int, level:int) -> error:int`
+  // Arms an ext1 wakeup for the next `ULP.sleep()`; pin -1 disarms, level 1
+  // wakes on HIGH, 0 on LOW. An omitted `level` arrives as 0.
+  int32_t be_ULP_ext1_wakeup(struct bvm *vm, int32_t pin, int32_t level) {
+#if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (pin == -1) {                    // the one documented way to disarm
+      be_ulp_ext1_mask = 0;
+      return ESP_OK;
+    }
+    if (pin < 0 || !rtc_gpio_is_valid_gpio((gpio_num_t)pin)) {
+      be_raisef(vm, "ulp_ext1_error", "ULP: pin %i cannot be an ext1 wakeup source", pin);
+      return ESP_ERR_INVALID_ARG;
+    }
+    be_ulp_ext1_mask = 1ULL << pin;
+    be_ulp_ext1_level = (level != 0) ? 1 : 0;
+    return ESP_OK;
+#else
+    be_raisef(vm, "ulp_ext1_error", "ULP: ext1 wakeup not supported on this SOC");
+    return ESP_FAIL;
+#endif
+  }
+
+  // `ULP.pd_rtc_periph(power_down:bool) -> nil`
+  // Lets the RTC peripheral domain power down during sleep (default: keep it
+  // on). Only effective while ext1 is armed - the domain also powers the ULP.
+  void be_ULP_pd_rtc_periph(bbool power_down) {
+#if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+    be_ulp_ext1_pd_periph = power_down;
+#endif
+  }
+
   // `ULP.sleep([wake time in seconds:int]) -> nil`
   void be_ULP_sleep(int32_t wake_up_s) {
     AddLog(LOG_LEVEL_INFO, "ULP: Enter sleep mode.");
@@ -159,6 +206,37 @@ extern "C" {
       AddLog(LOG_LEVEL_INFO, PSTR("ULP: will wake up in %u seconds."), wake_up_s);
       esp_sleep_enable_timer_wakeup(wake_up_s * 1000000ULL);    
     }
+#if defined(CONFIG_ULP_COPROC_TYPE_RISCV) && defined(SOC_PM_SUPPORT_RTC_PERIPH_PD) && SOC_PM_SUPPORT_RTC_PERIPH_PD
+    // A ULP reading a GPIO needs this domain, so keep it powered unless ext1
+    // took over the wakeup.
+  #if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (!(be_ulp_ext1_mask && be_ulp_ext1_pd_periph))
+  #endif
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+#endif
+#if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (be_ulp_ext1_mask) {
+      // Classic ESP32 has no ANY_LOW; with a single pin ALL_LOW is equivalent.
+  #if defined(CONFIG_IDF_TARGET_ESP32)
+      esp_sleep_ext1_wakeup_mode_t mode = be_ulp_ext1_level ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ALL_LOW;
+  #else
+      esp_sleep_ext1_wakeup_mode_t mode = be_ulp_ext1_level ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ANY_LOW;
+  #endif
+      // enable_..._io ADDS pins; clear first or a changed level gives NOT_ALLOWED.
+      esp_sleep_disable_ext1_wakeup_io(0);
+      esp_err_t ext1_err = esp_sleep_enable_ext1_wakeup_io(be_ulp_ext1_mask, mode);
+      AddLog(LOG_LEVEL_INFO, PSTR("ULP: ext1 wakeup on mask 0x%llx level %i err=%i"),
+             be_ulp_ext1_mask, be_ulp_ext1_level, ext1_err);
+    }
+#endif
+#if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
+    // The ULP wakeup is armed unless its power domain is released and ext1
+    // already provides a wakeup. It used to require a timer as well, which
+    // armed it for ULP.sleep(0) ("sleep until the magnet"): with RTC_PERIPH
+    // off the ULP then fires spuriously -- the device woke up although no
+    // timer was set. ext1 alone is a sufficient wake source.
+    if (!(be_ulp_ext1_mask && be_ulp_ext1_pd_periph))
+#endif
     esp_sleep_enable_ulp_wakeup();
     esp_deep_sleep_start();
   }

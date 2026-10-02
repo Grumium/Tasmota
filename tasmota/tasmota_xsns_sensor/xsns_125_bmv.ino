@@ -54,7 +54,7 @@
 #define BMV080_WIRE_BUF      512
 // Measured peak of bmv080_serve_interrupt(): 12376 bytes. 12 kB tripped the
 // stack canary; do not lower without re-measuring the high water mark.
-#define BMV080_TASK_STACK    24576
+#define BMV080_TASK_STACK    16384
 
 #include <bmv080.h>
 #include <bmv080_defs.h>

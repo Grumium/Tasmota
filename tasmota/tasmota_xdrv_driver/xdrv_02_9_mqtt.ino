@@ -99,7 +99,7 @@ void (* const MqttCommand[])(void) PROGMEM = {
 
 struct MQTT {
   uint16_t connect_count = 0;            // MQTT re-connect count
-  uint16_t retry_counter = 1;            // MQTT connection retry counter
+  uint16_t retry_counter = 0;            // MQTT connection retry counter (0 = connect on first MqttCheck after network up)
   uint16_t retry_counter_multiplier = 1; // MQTT retry counter multiplier
   uint8_t initial_connection_state = 2;  // MQTT connection messages state
   bool connected = false;                // MQTT virtual connection status

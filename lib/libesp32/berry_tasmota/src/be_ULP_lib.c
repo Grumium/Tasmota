@@ -26,6 +26,12 @@ BE_FUNC_CTYPE_DECLARE(be_ULP_gpio_init, "i", "ii");
 extern int32_t be_ULP_adc_config(struct bvm *vm, int32_t channel, int32_t attenuation, int32_t width);
 BE_FUNC_CTYPE_DECLARE(be_ULP_adc_config, "i", "@iii");
 
+extern int32_t be_ULP_ext1_wakeup(struct bvm *vm, int32_t pin, int32_t level);
+BE_FUNC_CTYPE_DECLARE(be_ULP_ext1_wakeup, "i", "@i[i]");   // optional level, omitted = 0 = LOW
+
+extern void be_ULP_pd_rtc_periph(bbool power_down);
+BE_FUNC_CTYPE_DECLARE(be_ULP_pd_rtc_periph, "", "b");
+
 extern void be_ULP_sleep(int32_t wake_up_s);
 BE_FUNC_CTYPE_DECLARE(be_ULP_sleep, "", "[i]");   // optional int arg
 
@@ -42,6 +48,8 @@ module ULP (scope: global) {
   wake_period,  ctype_func(be_ULP_wake_up_period)
   sleep,        ctype_func(be_ULP_sleep)
   adc_config,   ctype_func(be_ULP_adc_config)
+  ext1_wakeup,  ctype_func(be_ULP_ext1_wakeup)
+  pd_rtc_periph, ctype_func(be_ULP_pd_rtc_periph)
 }
 @const_object_info_end */
 #include "be_fixed_ULP.h"

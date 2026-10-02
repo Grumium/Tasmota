@@ -530,7 +530,7 @@ void HandleOPCAction(void) {
 
 class SpiGuard {
 public:
-  explicit SpiGuard(uint32_t clk_hz = 420'000UL) {
+  explicit SpiGuard(uint32_t clk_hz = 400'000UL) {
     SPI.beginTransaction(SPISettings(clk_hz, MSBFIRST, SPI_MODE1));
     digitalWrite(OPC.cs_pin, LOW);           // CS aktiv (0)
   }

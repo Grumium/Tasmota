@@ -35,6 +35,15 @@
 #ifndef WIFI_RETRY_SECONDS
 #define WIFI_RETRY_SECONDS      20         // Number of seconds connection to wifi network will retry
 #endif
+#ifndef WIFI_SCAN_PUBLISH_CHUNK
+#define WIFI_SCAN_PUBLISH_CHUNK 20         // Number of scanned networks published per tick
+#endif
+#ifndef WIFI_SCAN_MS_PER_CHANNEL
+#define WIFI_SCAN_MS_PER_CHANNEL 300       // Milliseconds the radio dwells on each channel during a scan
+#endif
+#ifndef WIFI_SCAN_PASSIVE_MS
+#define WIFI_SCAN_PASSIVE_MS    360        // Passive scan time per channel, 0 = leave the IDF default alone
+#endif
 
 const uint8_t WIFI_CONFIG_SEC = 180;       // seconds before restart
 const uint8_t WIFI_CHECK_SEC = 20;         // seconds
@@ -259,6 +268,16 @@ void WifiApplyConnectionChange(void)
 
   WifiDisable();
   WifiBegin(3, 0);
+  // WifiBegin() already ran here. With retry still at retry_init the next
+  // WifiCheckIp() (1 s later) calls WifiBegin(3) a second time and aborts this
+  // attempt after ~2.4 s -- seen on every Ap/SSID change as two "Connecting to
+  // AP" lines. Account for the attempt as WifiCheckIp() would have.
+  // Not with SetOption56: there the same retry_init condition selects the
+  // scan-based AP choice (scan_state = 1) instead of a WifiBegin(), and that
+  // must still run after a config change.
+  if (!Settings->flag3.use_wifi_scan) {    // SetOption56 - Scan wifi network at restart for configured AP's
+    Wifi.retry = Wifi.retry_init - 1;
+  }
 }
 #endif  // !RESTART_AFTER_WIFI_CONFIG_CHANGE
 
@@ -493,6 +512,78 @@ void WifiBegin(uint8_t flag, uint8_t channel) {
  * - Handles scan failures gracefully
  * - Manages memory by cleaning up scan results
  */
+#include <esp_wifi.h>
+
+// Arduino never touches scan_time.passive (WiFiScan.cpp zeroes the scan config
+// and only fills the active fields), so the IDF default of 360 ms applies.
+// Measured on an ESP32-S3: that value costs passive/2 per channel transition
+// even though the scan type is ACTIVE -- 11 transitions * 180 ms = 2.0 s of the
+// total. Lowering it shortens a scan WITHOUT touching the active dwell time, so
+// nothing is lost in detection. Values below 100 ms are clamped to 100 ms, and
+// 0 means "use the default" (esp_wifi.h:536), hence 0 is treated as "no change".
+// Note: these parameters also apply to the scans the stack runs while
+// CONNECTING (esp_wifi.h:530), not just to an explicit WifiScan.
+//
+// The 100 ms floor is NOT documented -- the IDF only states the 1500 ms ceiling.
+// It was found by measurement: 10, 50 and 100 all produce identical scan times.
+//
+// This and WIFI_COUNTRY_CODE below hit the SAME cost and do not add up: either
+// one brings the per-transition cost from 197 ms down to ~66 ms, and setting
+// both measured 4029 vs 4028 ms. Use the country code where one applies; this
+// Applied at scan time, not at boot: reading the scan parameters before the
+// first scan still shows the IDF default of 360, which is expected.
+
+// Do NOT try to speed up scans with esp_wifi_set_country_code(). It looked like
+// a 26 % win (5470 -> 4028 ms at 150 ms dwell) and was built, but the finding
+// did not survive: it was never reproducible afterwards, in four builds, not
+// even on the path it was found on. What actually produced those 4028 ms was
+// scan_time.passive still sitting at 100 from an earlier test -- the same lever
+// WIFI_SCAN_PASSIVE_MS uses above, measured again and confirmed since. The
+// country code contributed nothing. It also persists to flash and switches the
+// PHY init data (esp_wifi.h:1559-1561), so it is not free to retry casually.
+
+
+void WifiSetScanPassiveTime(void) {
+#if (WIFI_SCAN_PASSIVE_MS > 0) && (WIFI_SCAN_PASSIVE_MS != 360)
+  wifi_scan_default_params_t params;
+  if (ESP_OK == esp_wifi_get_scan_parameters(&params)) {
+    if (params.scan_time.passive != WIFI_SCAN_PASSIVE_MS) {
+      params.scan_time.passive = WIFI_SCAN_PASSIVE_MS;
+      esp_wifi_set_scan_parameters(&params);
+    }
+  }
+#endif
+}
+
+#ifndef WIFI_SCAN_START_RETRIES
+#define WIFI_SCAN_START_RETRIES 3                   // Ticks a refused wifiscan start is retried before giving up
+#endif
+
+#ifndef WIFI_SCAN_HOLD_MAX_TICKS
+#define WIFI_SCAN_HOLD_MAX_TICKS 15                 // Upper bound for holding off reconnects during a wifiscan
+#endif
+
+static uint8_t wifi_scan_start_retry = 0;
+static uint8_t wifi_scan_hold_ticks = 0;
+static bool wifi_scan_paused_connect = false;      // wifiscan stopped a connection attempt, resume it afterwards
+
+// A wifiscan (states 6 and 7) running without a link must not be interrupted:
+// every WifiBegin() from WifiCheckIp() would abort it or make the next start fail.
+// Capped independently of scan_state: WifiCheckIp() is the only path that
+// recovers a stuck connection, so a scan that never reports done must not
+// disable it for good. Call once per WifiCheck() tick.
+bool WifiScanHoldsConnect(void) {
+  if (((6 == Wifi.scan_state) || (7 == Wifi.scan_state)) && (WL_CONNECTED != WiFi.status())) {
+    if (wifi_scan_hold_ticks < WIFI_SCAN_HOLD_MAX_TICKS) {
+      wifi_scan_hold_ticks++;
+      return true;
+    }
+    return false;
+  }
+  wifi_scan_hold_ticks = 0;
+  return false;
+}
+
 void WifiBeginAfterScan(void)
 {
   // Not active
@@ -516,7 +607,8 @@ void WifiBeginAfterScan(void)
   // Init scan
   if (3 == Wifi.scan_state) {
     if (WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
-      WiFi.scanNetworks(true);                      // Start wifi scan async
+      WifiSetScanPassiveTime();
+      WiFi.scanNetworks(true, false, false, WIFI_SCAN_MS_PER_CHANNEL);  // Start wifi scan async
       Wifi.scan_state++;
       AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network (re)scan started..."));
       return;
@@ -592,9 +684,32 @@ void WifiBeginAfterScan(void)
   // Init scan for wifiscan command
   if (6 == Wifi.scan_state) {
     if (wifi_scan_result != WIFI_SCAN_RUNNING) {
-      WiFi.scanNetworks(true);                      // Start wifi scan async
+      // Without a link the station is almost always in the middle of a
+      // WifiBegin(), and esp_wifi_scan_start() refuses to scan while it is
+      // connecting (ESP_ERR_WIFI_STATE, esp_wifi.h:522). scanNetworks() then
+      // returns WIFI_SCAN_FAILED at once, state 7 takes that for "done" one tick
+      // later and the command reports "No networks found" -- no radio scan ever
+      // ran. Stop the attempt first; a voluntary disconnect (ASSOC_LEAVE) is not
+      // auto-reconnected by the core, and WifiCheck() holds off WifiCheckIp()
+      // until the scan is over (see WifiScanHoldsConnect()).
+      // Only on the first attempt: retries must not abort a fresh attempt again.
+      if ((WL_CONNECTED != WiFi.status()) && (0 == wifi_scan_start_retry)) {
+        WiFi.disconnect(false);
+        wifi_scan_paused_connect = true;
+      }
+      WifiSetScanPassiveTime();
+      if (WIFI_SCAN_FAILED == WiFi.scanNetworks(true, false, false, WIFI_SCAN_MS_PER_CHANNEL)) {  // Start wifi scan async
+        if (++wifi_scan_start_retry < WIFI_SCAN_START_RETRIES) {
+          AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network scan refused, retry %d"), wifi_scan_start_retry);
+          return;                                   // Stay in state 6, try again next tick
+        }
+        // Still move on to state 7: it sees WIFI_SCAN_FAILED and state 9 reports "Scan failed"
+        AddLog(LOG_LEVEL_INFO, PSTR(D_LOG_WIFI "Network scan could not be started"));
+      } else {
+        AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network scan started..."));
+      }
+      wifi_scan_start_retry = 0;
       Wifi.scan_state++;
-      AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network scan started..."));
       return;
     }
   }
@@ -603,7 +718,19 @@ void WifiBeginAfterScan(void)
     if (wifi_scan_result != WIFI_SCAN_RUNNING) {
       AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network scan finished..."));
       Wifi.scan_state++;
-      return;
+      if (wifi_scan_paused_connect) {
+        wifi_scan_paused_connect = false;
+        if (!Settings->flag3.use_wifi_scan) {       // SetOption56 - Scan wifi network at restart for configured AP's
+          Wifi.retry = Wifi.retry_init;             // Next WifiCheckIp() starts over with WifiBegin() at once
+        }
+        // With SetOption56, retry_init would make WifiCheckIp() set scan_state = 1
+        // while this wifiscan is still publishing (states 8..69) and cut it off.
+        // The normal retry countdown resumes the connection instead.
+        Wifi.counter = 1;                           // We cut the link: re-check soon either way, not after WIFI_CHECK_SEC
+      }
+      // Fall through into the publish block below instead of returning: state 8
+      // did nothing but raise the counter, costing a full tick before the first
+      // network was published.
     }
   }
   // Scan done. Show SSId's scan result by MQTT and in console
@@ -612,7 +739,7 @@ void WifiBeginAfterScan(void)
 
     ResponseClear();
 
-    int32_t initial_item = (Wifi.scan_state - 9)*10;
+    int32_t initial_item = (Wifi.scan_state - 9) * WIFI_SCAN_PUBLISH_CHUNK;
 
     if ( wifi_scan_result > initial_item ) {
       // Sort networks by RSSI
@@ -630,7 +757,7 @@ void WifiBeginAfterScan(void)
       delay(0);
 
       // Publish the list
-      uint32_t end_item = ( wifi_scan_result > initial_item + 10 ) ? initial_item + 10 : wifi_scan_result;
+      uint32_t end_item = ( wifi_scan_result > initial_item + WIFI_SCAN_PUBLISH_CHUNK ) ? initial_item + WIFI_SCAN_PUBLISH_CHUNK : wifi_scan_result;
       for (uint32_t i = initial_item; i < end_item; i++) {
         Response_P(PSTR("{\"" D_CMND_WIFISCAN "\":{\"" D_STATUS5_NETWORK "%d\":{\"" D_SSID "\":\"%s\",\"" D_BSSID "\":\"%s\",\"" D_CHANNEL
                         "\":\"%d\",\"" D_JSON_SIGNAL "\":\"%d\",\"" D_RSSI "\":\"%d\",\"" D_JSON_ENCRYPTION "\":\"%s\"}}}"),
@@ -644,12 +771,18 @@ void WifiBeginAfterScan(void)
         MqttPublishPrefixTopicRulesProcess_P(RESULT_OR_STAT, PSTR(D_CMND_WIFISCAN));
       }
     } else if (9 == Wifi.scan_state) {
-      Response_P(PSTR("{\"" D_CMND_WIFISCAN "\":\"" D_NO_NETWORKS_FOUND "\"}"));
+      // WIFI_SCAN_FAILED (-2) means no radio scan ran at all -- report that,
+      // not an empty environment.
+      if (WIFI_SCAN_FAILED == wifi_scan_result) {
+        Response_P(PSTR("{\"" D_CMND_WIFISCAN "\":\"Scan failed\"}"));
+      } else {
+        Response_P(PSTR("{\"" D_CMND_WIFISCAN "\":\"" D_NO_NETWORKS_FOUND "\"}"));
+      }
       MqttPublishPrefixTopicRulesProcess_P(RESULT_OR_STAT, PSTR(D_CMND_WIFISCAN));
     }
     delay(0);
   }
-  // Wait 1 minute before cleaning the results so the user can ask for the them using wifiscan command (HTTP use-case)
+  // Wait 1 minute (60 ticks of 1 second) before cleaning the results so the user can ask for the them using wifiscan command (HTTP use-case)
   if (69 == Wifi.scan_state) {
     //AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_WIFI "Network scan results deleted..."));
     Wifi.scan_state = 0;
@@ -1329,7 +1462,9 @@ void WifiCheck(uint8_t param)
         TasmotaGlobal.restart_flag = 2;
       }
     } else {
-      if (Wifi.counter <= 0) {
+      if (WifiScanHoldsConnect()) {
+        Wifi.counter = 1;                           // Check again right after the scan
+      } else if (Wifi.counter <= 0) {
         WifiCheckIp();
       }
       if ((WL_CONNECTED == WiFi.status()) && WifiHasIP() && !Wifi.config_type) {
@@ -2176,6 +2311,7 @@ extern esp_netif_t* get_esp_interface_netif(esp_interface_t interface);
  */
 void WifiEvents(arduino_event_t *event) {
   switch (event->event_id) {
+
 
 #ifdef USE_IPV6
     case ARDUINO_EVENT_WIFI_STA_GOT_IP6:

@@ -1148,6 +1148,27 @@ void PerformEverySecond(void)
 {
   TasmotaGlobal.uptime++;
 
+#ifdef ESP32
+  // Why did the last deep sleep end? Valid for the whole boot, logged late so
+  // USB CDC has reconnected and the line is not lost. Diagnostic for ULP.sleep(0)
+  // waking up without a timer (EXT1 = magnet, ULP/COCPU = coprocessor).
+  if (3 == TasmotaGlobal.uptime) {
+    int cause = esp_sleep_get_wakeup_cause();
+    const char* name = "other";
+    switch (cause) {
+      case ESP_SLEEP_WAKEUP_UNDEFINED:  name = "none (not from deep sleep)"; break;
+      case ESP_SLEEP_WAKEUP_EXT0:       name = "EXT0"; break;
+      case ESP_SLEEP_WAKEUP_EXT1:       name = "EXT1"; break;
+      case ESP_SLEEP_WAKEUP_TIMER:      name = "TIMER"; break;
+      case ESP_SLEEP_WAKEUP_ULP:        name = "ULP"; break;
+      case ESP_SLEEP_WAKEUP_GPIO:       name = "GPIO"; break;
+      case ESP_SLEEP_WAKEUP_COCPU:      name = "COCPU"; break;
+      case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG: name = "COCPU_TRAP"; break;
+    }
+    AddLog(LOG_LEVEL_INFO, PSTR("APP: Wakeup cause %d (%s)"), cause, name);
+  }
+#endif  // ESP32
+
   if (POWER_CYCLE_TIME == TasmotaGlobal.uptime) {
     UpdateQuickPowerCycle(false);
   }
@@ -1267,7 +1288,17 @@ void PerformEverySecond(void)
   wifiKeepAlive();
 #endif
 
-  WifiPollNtp();
+  // WifiGetNtp() blockiert den Hauptloop (DNS + bis zu 1 s UDP-Wait,
+  // support_wifi.ino:2105) und verzoegert damit den ersten MqttCheck() nach
+  // dem Boot. Steht die Zeit bereits -- etwa aus einer Hardware-RTC, die
+  // RtcChipDetect() schon vor dem Boot-Banner liest -- darf NTP warten, bis
+  // MQTT verbunden ist. Ohne gueltige Zeit (kein RTC-Chip, leere Pufferzelle)
+  // bleibt es beim bisherigen sofortigen, blockierenden Sync.
+  if (!((RtcTime.year >= 2016) &&                          // Zeit gueltig (RTC oder frueherer Sync)
+        (TasmotaGlobal.uptime < 15) &&                     // nur im Boot-Fenster
+        TasmotaGlobal.global_state.mqtt_down)) {           // und nur solange MQTT fehlt
+    WifiPollNtp();
+  }
 
 #ifdef ESP32
   if (11 == TasmotaGlobal.uptime) {  // Perform one-time ESP32 houskeeping
@@ -1401,6 +1432,10 @@ void Every250mSeconds(void)
 
 /*-------------------------------------------------------------------------------------------*\
  * Every second at 0.25 second interval
+ *
+ * state_250mS cycles 0..3, so each case below runs ONCE PER SECOND, not every
+ * 0.25 second. The 'Every x.n second' comments name the phase within the
+ * second, not the interval between two calls of that case.
 \*-------------------------------------------------------------------------------------------*/
 
   static int ota_result = 0;

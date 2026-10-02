@@ -880,6 +880,9 @@ bool Xdrv52(uint32_t function)
       break;
     case FUNC_EVERY_SECOND:
       callBerryEventDispatcher(PSTR("every_second"), nullptr, 0, nullptr);
+#ifdef USE_BLE_ADV
+      BLEAdvEverySecond();        // re-arm advertising if the stack was restarted
+#endif
       break;
     case FUNC_SET_DEVICE_POWER:
       result = callBerryEventDispatcher(PSTR("set_power_handler"), nullptr, XdrvMailbox.index, nullptr);
