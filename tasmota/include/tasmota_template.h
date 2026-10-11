@@ -143,7 +143,6 @@ enum UserSelectablePins {
   GPIO_ST7789_CS, GPIO_ST7789_DC,
   GPIO_SSD1331_CS, GPIO_SSD1331_DC,
   GPIO_SDCARD_CS,
-  GPIO_OPC_CS,                         // Alphasense OPC Chip Select
   GPIO_ROT1A_NP, GPIO_ROT1B_NP,        // Rotary switch
   GPIO_ADC_PH,                         // Analog PH Sensor
   GPIO_BS814_CLK, GPIO_BS814_DAT,      // Holtek BS814A2 touch ctrlr
@@ -245,6 +244,8 @@ enum UserSelectablePins {
   GPIO_MIEL_HVAC_MB_TX, GPIO_MIEL_HVAC_MB_RX, GPIO_MIEL_HVAC_MB_TXEN,  // Mitsubishi Electric HVAC Modbus RTU slave
 #endif
   GPIO_CC1101_CS,                       // CC1101 SPI chip select
+  GPIO_GPS_PPS,                         // GPS pulse per second for NTP server time base
+  GPIO_OPC_CS,                         // Alphasense OPC Chip Select
   GPIO_SENSOR_END };
 
 // Error as warning to rethink GPIO usage with max 2045
@@ -430,7 +431,6 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_ST7789_CS "|" D_SENSOR_ST7789_DC "|"
   D_SENSOR_SSD1331_CS "|" D_SENSOR_SSD1331_DC "|"
   D_SENSOR_SDCARD_CS "|"
-  D_SENSOR_OPC_CS "|"
   D_SENSOR_ROTARY " A_n|" D_SENSOR_ROTARY " B_n|"
   D_SENSOR_ADC_PH "|"
   D_SENSOR_BS814_CLK "|" D_SENSOR_BS814_DAT "|"
@@ -531,6 +531,8 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_MIEL_HVAC_MB_TX "|" D_SENSOR_MIEL_HVAC_MB_RX "|" D_SENSOR_MIEL_HVAC_MB_TXEN "|"
 #endif
   D_SENSOR_CC1101_CS "|"
+  D_SENSOR_GPS_PPS "|"
+  D_SENSOR_OPC_CS "|"
 ;
 
 const char kSensorNamesFixed[] PROGMEM =
