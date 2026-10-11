@@ -166,6 +166,8 @@ const char WIFI_HOSTNAME[] = WIFI_DEFAULT_HOSTNAME;    // Override by user_confi
   #endif
 #elif CONFIG_IDF_TARGET_ESP32S3
   #define TASMOTA_ARCH              "esp32s3"
+#elif CONFIG_IDF_TARGET_ESP32S31
+  #define TASMOTA_ARCH              "esp32s31"
 #else
   #define TASMOTA_ARCH              "esp32"
 #endif
@@ -334,7 +336,7 @@ const char WIFI_HOSTNAME[] = WIFI_DEFAULT_HOSTNAME;    // Override by user_confi
 #endif
 
 #ifndef EMULATION
-#define EMULATION                   EMUL_NONE  // [Emulation] Select Belkin WeMo (single relay/light) or Hue Bridge emulation (multi relay/light) (EMUL_NONE, EMUL_WEMO or EMUL_HUE)
+#define EMULATION                   EMUL_NONE  // [Emulation] Select Belkin WeMo (single relay/light), Hue Bridge (multi relay/light) or Shelly emulation (EMUL_NONE, EMUL_WEMO, EMUL_HUE or EMUL_SHELLY)
 #endif
 
 #ifndef MTX_ADDRESS1                           // Add Display Support for up to eigth Matrices
@@ -493,7 +495,7 @@ const char WIFI_HOSTNAME[] = WIFI_DEFAULT_HOSTNAME;    // Override by user_confi
 #define COLOR_TITLE_TEXT			      COLOR_TEXT // Title text color defaults to global text color either dark or light
 #endif
 #ifndef COLOR_BUTTON_OFF
-#define COLOR_BUTTON_OFF			      "#08405e"  // Button color when off - Darkest blueish
+#define COLOR_BUTTON_OFF			      "#a1d9f7"  // Button color when off - Light blue
 #endif
 
 enum WebColors {

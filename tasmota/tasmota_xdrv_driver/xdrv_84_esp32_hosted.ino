@@ -8,6 +8,7 @@
 
 #ifdef ESP32
 #ifdef CONFIG_ESP_WIFI_REMOTE_ENABLED
+#if __has_include("esp_hosted.h")
 #ifndef FIRMWARE_SAFEBOOT
 /*********************************************************************************************\
  * Support for Hosted MCU to be used on ESP32-H2 and ESP32-P4
@@ -103,6 +104,7 @@ void HostedMCUStatus(void) {
   if (once_shown) { return; }
   if (esp_hosted_is_config_valid()) {
     once_shown = true;
+/*
     char config[128] = { 0 };
     struct esp_hosted_transport_config *pconfig;
     if (ESP_TRANSPORT_OK == esp_hosted_transport_get_config(&pconfig)) {
@@ -116,6 +118,9 @@ void HostedMCUStatus(void) {
     }
     AddLog(LOG_LEVEL_INFO, PSTR("HST: Hosted MCU %s v%s%s"),
       GetHostedMCU().c_str(), GetHostedFwVersion(ESP_HOSTED).c_str(), config);
+*/
+    AddLog(LOG_LEVEL_INFO, PSTR("HST: Hosted MCU %s v%s"),
+      GetHostedMCU().c_str(), GetHostedFwVersion(ESP_HOSTED).c_str());
   }
 }
 
@@ -395,5 +400,11 @@ bool Xdrv84(uint32_t function) {
 }
 
 #endif  // FIRMWARE_SAFEBOOT
+#else   // !__has_include("esp_hosted.h") - stub implementations for platforms without Hosted MCU support
+// Stub functions so callers compile on platforms where esp_hosted.h is unavailable (e.g. ESP32-C3 with IDF 6.x)
+String GetHostedFwVersion(uint32_t device) { return String(""); }
+String GetHostedMCU(void) { return String(""); }
+void HostedMCUStatus(void) {}
+#endif  // __has_include("esp_hosted.h")
 #endif  // CONFIG_ESP_WIFI_REMOTE_ENABLED
 #endif  // ESP32

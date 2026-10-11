@@ -28,7 +28,7 @@
 static void int64_toa(int64_t num, uint8_t* str) {
   uint64_t sum = num;
   if (num < 0) {
-    sum = -num;
+    sum = -(uint64_t)num;   /* negate in unsigned domain to avoid UB on INT64_MIN */
     str[0] = '-';
     str++;
   }
@@ -95,16 +95,13 @@ static int64_t* arg_get_p(bvm *vm, int idx) {
  * Stack on return: new int64 instance at top.
  */
 static void push_int64_instance(bvm *vm, int64_t val) {
-  int64_t *r64 = (int64_t*)be_malloc(vm, sizeof(int64_t));
-  if (r64 == NULL) { be_raise(vm, "memory_error", "cannot allocate buffer"); }
-  *r64 = val;
   be_getglobal(vm, "int64");     /* stack: class */
   be_call(vm, 0);                /* stack: instance */
-  be_getmember(vm, -1, "init");  /* stack: instance, init */
-  be_pushvalue(vm, -2);          /* stack: instance, init, instance */
-  be_pushcomptr(vm, r64);        /* stack: instance, init, instance, ptr */
-  be_call(vm, 2);                /* stack: instance, ret */
-  be_pop(vm, 1);                 /* stack: instance */
+  /* The constructor owns the payload; initializing it again would leak it.
+   * Keep the instance on the stack and fill its existing allocation instead. */
+  int64_t *r64 = arg_get_p(vm, -1);
+  if (r64 == NULL) { be_raise(vm, "memory_error", "cannot allocate buffer"); }
+  *r64 = val;
 }
 
 /*********************************************************************************************\
@@ -226,7 +223,7 @@ static int int64_fromu32(bvm *vm) {
   int argc = be_top(vm);
   uint32_t low = (uint32_t)be_toint(vm, 1);
   uint32_t high = (argc > 1) ? (uint32_t)be_toint(vm, 2) : 0;
-  int64_t val = (int64_t)low | (((int64_t)high) << 32);
+  int64_t val = (int64_t)((uint64_t)low | ((uint64_t)high << 32));
   push_int64_instance(vm, val);
   be_return(vm);
 }
@@ -347,7 +344,7 @@ static int int64_mod(bvm *vm) {
 static int int64_shiftleft(bvm *vm) {
   int64_t *i64 = self_get_p(vm);
   int32_t j32 = be_toint(vm, 2) & 63;
-  push_int64_instance(vm, *i64 << j32);
+  push_int64_instance(vm, (int64_t)((uint64_t)*i64 << j32));
   be_return(vm);
 }
 

@@ -84,3 +84,6 @@ jumpwatch.log
 jumpwatch2.py
 TLS-Befund-WIFIonICE.md
 TODO-ulp-ext1-wakeup.md
+
+## Qemu test folder
+tasmota-qemu

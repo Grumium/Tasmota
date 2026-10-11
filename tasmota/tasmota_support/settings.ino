@@ -553,6 +553,8 @@ bool SettingsConfigRestore(void) {
     valid_settings = (7 == settings_buffer[0xF36]);  // Settings->config_version ESP32P4
 #elif CONFIG_IDF_TARGET_ESP32C5
     valid_settings = (8 == settings_buffer[0xF36]);  // Settings->config_version ESP32C5
+#elif CONFIG_IDF_TARGET_ESP32S31
+    valid_settings = (9 == settings_buffer[0xF36]);  // Settings->config_version ESP32S31
 #else
     valid_settings = (1 == settings_buffer[0xF36]);  // Settings->config_version ESP32 all other
 #endif  // CONFIG_IDF_TARGET_ESP32S3
@@ -997,6 +999,8 @@ void SettingsDefaultSet2(void) {
   Settings->config_version = 7;  // ESP32P4
 #elif CONFIG_IDF_TARGET_ESP32C5
   Settings->config_version = 8;  // ESP32C5
+#elif CONFIG_IDF_TARGET_ESP32S31
+  Settings->config_version = 9;  // ESP32S31
 #else
   Settings->config_version = 1;  // ESP32
 #endif  // CONFIG_IDF_TARGET_ESP32S3
@@ -1093,6 +1097,8 @@ void SettingsDefaultSet2(void) {
   ParseIPv4(&Settings->ipv4_rgx_subnetmask, PSTR(WIFI_RGX_SUBNETMASK));
   Settings->sta_config = WIFI_CONFIG_TOOL;
 //  Settings->sta_active = 0;
+  SettingsUpdateText(SET_APBSSID1, PSTR(AP_BSSID1));
+  SettingsUpdateText(SET_APBSSID2, PSTR(AP_BSSID2));
   SettingsUpdateText(SET_STASSID1, PSTR(STA_SSID1));
   SettingsUpdateText(SET_STASSID2, PSTR(STA_SSID2));
   SettingsUpdateText(SET_STAPWD1, PSTR(STA_PASS1));
@@ -1614,6 +1620,8 @@ void SettingsDelta(void) {
       Settings->config_version = 7;  // ESP32P4
 #elif CONFIG_IDF_TARGET_ESP32C5
       Settings->config_version = 8;  // ESP32C5
+#elif CONFIG_IDF_TARGET_ESP32S31
+      Settings->config_version = 9;  // ESP32S31
 #else
       Settings->config_version = 1;  // ESP32
 #endif  // CONFIG_IDF_TARGET_ESP32S3
@@ -1905,6 +1913,15 @@ void SettingsDelta(void) {
     if (Settings->version < 0x0F020006) {  // 15.2.0.6
       Settings->i2c_drivers2[0] = I2CDRIVERS_96_127;
       Settings->i2c_drivers2[1] = I2CDRIVERS_128_159;
+    }
+    // Split of EnableEndStopTime into OpenEndStopTime and CloseEndStopTime flags
+    if (Settings->version < 0x0F060002) {  // 15.6.0.2
+      // ESP8266 Shutter driver (data always exposed, but otherwise unused)
+      for (size_t shutter_idx = 0; shutter_idx < MAX_SHUTTERS; shutter_idx++) {
+        if (Settings->shutter_options[shutter_idx] & 4) {
+          Settings->shutter_options[shutter_idx] |= 16;
+        }
+      }
     }
 
     Settings->version = TASMOTA_VERSION;

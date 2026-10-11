@@ -126,7 +126,7 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
     # 0x0003: inherited                             # Identify 1.2 p.16
     # 0x0004: inherited                             # Groups 1.3 p.21
     # 0x0062: inherited                             # Scenes Management 1.4 (PROVISIONAL) - replaces 0x0005
-    0x0006: [0],                                    # On/Off 1.5 p.48
+    0x0006: [0,0x4000,0x4001,0x4002,0x4003],        # On/Off 1.5 p.48
   })
   static var UPDATE_COMMANDS = matter.UC_LIST(_class, "Power")
   static var TYPES = { 0x0100: 3 }                  # OnOff Light - Matter 1.4.1 Device Library Rev 3
@@ -217,6 +217,14 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
       self.update_shadow_lazy()
       if   attribute == 0x0000          #  ---------- OnOff / bool ----------
         return tlv_solo.set(0x08 #-TLV.BOOL-#, self.shadow_onoff)
+      elif attribute == 0x4000          #  ---------- GlobalSceneControl / bool ----------
+        return tlv_solo.set(0x08 #-TLV.BOOL-#, true)
+      elif attribute == 0x4001          #  ---------- OnTime / u2 ----------
+        return tlv_solo.set(0x06 #-TLV.U4-#, 0)
+      elif attribute == 0x4002          #  ---------- OffWaitTime / u2 ----------
+        return tlv_solo.set(0x06 #-TLV.U4-#, 0)
+      elif attribute == 0x4003          #  ---------- StartUpOnOff / enum8 nullable ----------
+        return tlv_solo.set(0x14 #-TLV.NULL-#, nil)
       end
 
     end
@@ -235,6 +243,7 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
 
     # ====================================================================================================
     if   cluster == 0x0006              # ========== On/Off 1.5 p.48 ==========
+      if !self.mqtt_command_ready(ctx)   return nil   end
       self.update_shadow_lazy()
       if   command == 0x0000            # ---------- Off ----------
         self.set_onoff(false)
@@ -247,6 +256,18 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
       elif command == 0x0002            # ---------- Toggle ----------
         self.set_onoff(!self.shadow_onoff)
         self.publish_command('Power', self.shadow_onoff ? 1 : 0)
+        return true
+      elif command == 0x0040            # ---------- OffWithEffect ----------
+        self.set_onoff(false)
+        self.publish_command('Power', 0)
+        return true
+      elif command == 0x0041            # ---------- OnWithRecallGlobalScene ----------
+        self.set_onoff(true)
+        self.publish_command('Power', 1)
+        return true
+      elif command == 0x0042            # ---------- OnWithTimedOff ----------
+        self.set_onoff(true)
+        self.publish_command('Power', 1)
         return true
       end
     end
@@ -308,13 +329,13 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
   # This call is synnchronous and blocking.
   def parse_status(data, index)
     if index == 11                              # Status 11
-      var state = false
+      var power_key = "POWER" + str(self.tasmota_relay_index)
 
       if self.tasmota_relay_index == 1 && data.contains("POWER")        # special case, can be `POWER` or `POWER1`
-        state = (data.find("POWER") == "ON")
-      else
-        state = (data.find("POWER" + str(self.tasmota_relay_index)) == "ON")
+        power_key = "POWER"
       end
+      if !data.contains(power_key)   return   end
+      var state = (data.find(power_key) == "ON")
 
       if self.shadow_onoff != bool(state)
         self.attribute_updated(0x0006, 0x0000)

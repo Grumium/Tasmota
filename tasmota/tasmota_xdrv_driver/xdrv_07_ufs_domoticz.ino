@@ -213,7 +213,7 @@ void DomoticzSettingsLoad(bool erase) {
     Domoticz->Settings.sensor_idx[i] = 0;
   }
 
-#ifndef CONFIG_IDF_TARGET_ESP32P4
+#if !CONFIG_IDF_TARGET_ESP32P4 && !CONFIG_IDF_TARGET_ESP32S31
   // Init any other parameter in struct DzSettings
   Domoticz->Settings.update_timer = Settings->domoticz_update_timer;
   for (uint32_t i = 0; i < MAX_DOMOTICZ_IDX; i++) {
@@ -233,7 +233,7 @@ void DomoticzSettingsLoad(bool erase) {
     }
   }
   // *** End Init default values ***
-#endif  // CONFIG_IDF_TARGET_ESP32P4
+#endif  // !CONFIG_IDF_TARGET_ESP32P4 && !CONFIG_IDF_TARGET_ESP32S31
 
   // Try to load key
   if (erase) {
@@ -468,7 +468,7 @@ bool DomoticzMqttData(void) {
 
 #ifdef USE_DOMOTICZ_DEBUG
   char dom_data[XdrvMailbox.data_len +1];
-  strcpy(dom_data, XdrvMailbox.data);
+  strlcpy(dom_data, XdrvMailbox.data, sizeof(dom_data));
   AddLog(LOG_LEVEL_DEBUG_MORE, PSTR(D_LOG_DOMOTICZ "%s = %s"), XdrvMailbox.topic, RemoveControlCharacter(dom_data));
 #endif  // USE_DOMOTICZ_DEBUG
 
@@ -934,7 +934,7 @@ void HandleDomoticzConfiguration(void) {
 String DomoticzAddWebCommand(const char* command, const char* arg, uint32_t value) {
   char tmp[8];                       // WebGetArg numbers only
   WebGetArg(arg, tmp, sizeof(tmp));
-  if (!strlen(tmp)) { strcpy(tmp, "0"); }
+  if (!strlen(tmp)) { strlcpy(tmp, "0", sizeof(tmp)); }
   if (atoi(tmp) == value) { return ""; }
   return AddWebCommand(command, arg, PSTR("0"));
 }

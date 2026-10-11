@@ -313,10 +313,18 @@ uDisplay::uDisplay(char *lp) : Renderer(800, 600) {
               // Parse data pins directly into RGB config
               // Note: byte order may be swapped later based on lvgl_param.swap_color
               for (uint32_t cnt = 0; cnt < 8; cnt++) {
+                  #if ESP_IDF_VERSION_MAJOR < 6
                   panel_config->rgb.data_gpio_nums[cnt + 8] = next_val(&lp1);
+                  #else
+                  panel_config->rgb.data_gpio_nums[cnt + 8] = (gpio_num_t)next_val(&lp1);
+                  #endif
               }
               for (uint32_t cnt = 0; cnt < 8; cnt++) {
+                 #if ESP_IDF_VERSION_MAJOR < 6
                   panel_config->rgb.data_gpio_nums[cnt] = next_val(&lp1);
+                  #else
+                  panel_config->rgb.data_gpio_nums[cnt] = (gpio_num_t)next_val(&lp1);
+                  #endif
               }
               spi_speed = next_val(&lp1);
 #endif //SOC_LCD_RGB_SUPPORTED
@@ -634,6 +642,12 @@ uDisplay::uDisplay(char *lp) : Renderer(800, 600) {
               panel_config->i2c.col_start = next_hex(&lp1);
               panel_config->i2c.col_end = next_hex(&lp1);
               panel_config->i2c.cmd_write_ram = next_hex(&lp1);
+              // SPI + bpp==1: also write to spi config (union offset mismatch)
+              if (interface == _UDSP_SPI) {
+                panel_config->spi.cmd_set_addr_x = panel_config->i2c.cmd_set_addr_x;
+                panel_config->spi.cmd_set_addr_y = panel_config->i2c.cmd_set_addr_y;
+                panel_config->spi.cmd_write_ram = panel_config->i2c.cmd_write_ram;
+              }
               // Also keep in legacy vars for now
               saw_1 = panel_config->i2c.cmd_set_addr_x;
               i2c_page_start = panel_config->i2c.page_start;
@@ -899,8 +913,13 @@ void UfsCheckSDCardInit(void);
   AddLog(LOG_LEVEL_DEBUG, "UDisplay: Device:%s xs:%d ys:%d bpp:%d", dname, gxs, gys, bpp);
 
   if (interface == _UDSP_SPI) {
+#ifdef USE_UNIVERSAL_TOUCH
     AddLog(LOG_LEVEL_DEBUG, "UDisplay: Nr:%d CS:%d CLK:%d MOSI:%d DC:%d TS_CS:%d TS_RST:%d TS_IRQ:%d", 
        spiController->spi_config.bus_nr, spiController->spi_config.cs, spiController->spi_config.clk, spiController->spi_config.mosi, spiController->spi_config.dc, ut_spi_cs, ut_reset, ut_irq);
+#else
+    AddLog(LOG_LEVEL_DEBUG, "UDisplay: Nr:%d CS:%d CLK:%d MOSI:%d DC:%d", 
+       spiController->spi_config.bus_nr, spiController->spi_config.cs, spiController->spi_config.clk, spiController->spi_config.mosi, spiController->spi_config.dc);
+#endif
     AddLog(LOG_LEVEL_DEBUG, "UDisplay: BPAN:%d RES:%d MISO:%d SPED:%d Pixels:%d SaMode:%d DMA-Mode:%d opts:%02x,%02x,%02x SetAddr:%x,%x,%x", 
        bpanel, reset, spiController->spi_config.miso, spiController->spi_config.speed*1000000, col_mode, sa_mode, lvgl_param.use_dma, saw_3, dim_op, startline, saw_1, saw_2, saw_3);
     AddLog(LOG_LEVEL_DEBUG, "UDisplay: Rot 0: %x,%x - %d - %d", madctrl, rot[0], x_addr_offs[0], y_addr_offs[0]);
@@ -1315,13 +1334,20 @@ if (interface == _UDSP_SPI) {
     panel_config->rgb.timings.h_res = gxs;
     panel_config->rgb.timings.v_res = gys;
     panel_config->rgb.data_width = 16; // RGB565 in parallel mode, thus 16bit in width
+#if ESP_IDF_VERSION_MAJOR < 6
+    // sram_trans_align / psram_trans_align removed in IDF 6.x
     panel_config->rgb.sram_trans_align = 8;
     panel_config->rgb.psram_trans_align = 64;
+#endif
 
     // Handle byte swapping by swapping the low and high byte pin assignments
     if (lvgl_param.swap_color) {
       for (uint32_t cnt = 0; cnt < 8; cnt++) {
+        #if ESP_IDF_VERSION_MAJOR < 6
         int8_t temp = panel_config->rgb.data_gpio_nums[cnt];
+        #else
+        gpio_num_t temp = panel_config->rgb.data_gpio_nums[cnt];
+        #endif
         panel_config->rgb.data_gpio_nums[cnt] = panel_config->rgb.data_gpio_nums[cnt + 8];
         panel_config->rgb.data_gpio_nums[cnt + 8] = temp;
       }

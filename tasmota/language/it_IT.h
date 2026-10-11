@@ -28,7 +28,7 @@
  * Use online command StateText to translate ON, OFF, HOLD and TOGGLE.
  * Use online command Prefix to translate cmnd, stat and tele.
  *
- * Updated until v9.4.0.1 - Last update 12.05.2026
+ * Updated until v9.4.0.1 - Last update 31.08.2026
 \*********************************************************************/
 
 #define LANGUAGE_MODULE_NAME         // Enable to display "Module Generic" (ie Spanish), Disable to display "Generic Module" (ie English)
@@ -60,11 +60,13 @@
 #define D_AT                   "in"
 #define D_AUTO                 "AUTO"
 #define D_AUTO_UPDATE          "Aggiornamento automatico"
+#define D_AUTOMATIC            "Automatic"
 #define D_BATT                 "Batt"                 // Short for Battery
 #define D_BATTERY              "Batteria"
 #define D_BATTERY_CHARGE       "Carica"               // Battery charge in %
 #define D_BLINK                "Lampeggia"
 #define D_BLINKOFF             "Lampeggia OFF"
+#define D_BOOST                "Boost"
 #define D_BOOT_COUNT           "Numero boot"
 #define D_BRIGHTLIGHT          "Luminoso"
 #define D_BSSID                "BSSId"
@@ -73,6 +75,7 @@
 #define D_BYTES                "Byte"
 #define D_CELSIUS              "Celsius"
 #define D_CHANNEL              "Canale"
+#define D_CHILD_LOCK           "Child Lock"
 #define D_CO2                  "CO2"
 #define D_CODE                 "codice"              // Button code
 #define D_COLDLIGHT            "Fredda"
@@ -88,6 +91,7 @@
 #define D_DARKLIGHT            "Scuro"
 #define D_DATA                 "Dati"
 #define D_DEBUG                "Debug"
+#define D_DECRYPTION           "Decryption"
 #define D_DEWPOINT             "Punto rugiada" //
 #define D_DISABLED             "Disabilitato/a"
 #define D_DISCONNECTED         "Disconnesso"
@@ -120,6 +124,7 @@
 #define D_HALL_EFFECT          "Effetto hall"
 #define D_HCHO                 "Formaldeide"
 #define D_HEATINDEX            "Indice calore"
+#define D_HOLIDAY              "Vacanza"
 #define D_HOST                 "Host"
 #define D_HOSTNAME             "Nome host"
 #define D_HUMIDITY             "Umidità"
@@ -131,13 +136,16 @@
 #define D_INITIALIZED          "Inizializzato"
 #define D_IP_ADDRESS           "Indirizzo IP"
 #define D_LIGHT                "Luce"
+#define D_LOW                  "Basso"
 #define D_LQI                  "LQI"                  // Zigbee Link Quality Index
 #define D_LWT                  "LWT"
+#define D_MANUAL               "Manuale"
 #define D_MODULE               "Modulo"
 #define D_MOISTURE             "Umidità"
 #define D_MQ                   "MQ"
 #define D_MQTT                 "MQTT"
 #define D_MULTI_PRESS          "multi-pressione"
+#define D_NA                   "N/D"
 #define D_NOISE                "Rumore"
 #define D_NONE                 "Nessuno"
 #define D_NOX                  "NOx"
@@ -222,6 +230,7 @@
 #define D_WATER_DEPTH          "Profondità dell'acqua"
 #define D_WEB_SERVER           "Server web"
 #define D_WEIGHT               "Peso"
+#define D_WINDOW_OPEN          "Window open"
 
 // tasmota.ino
 #define D_WARNING_MINIMAL_VERSION  "ATTENZIONE Questa versione non supporta il salvataggio delle impostazioni"
@@ -972,6 +981,9 @@
 #define D_SENSOR_IEM3000_RX             "iEM3000 - RX"
 #define D_SENSOR_MIEL_HVAC_TX           "MiEl HVAC - TX"
 #define D_SENSOR_MIEL_HVAC_RX           "MiEl HVAC - RX"
+#define D_SENSOR_MIEL_HVAC_MB_TX        "MiEl HVAC MB - TX"
+#define D_SENSOR_MIEL_HVAC_MB_RX        "MiEl HVAC MB - RX"
+#define D_SENSOR_MIEL_HVAC_MB_TXEN      "MiEl HVAC MB - DE"
 #define D_SENSOR_PROJECTOR_CTRL_TX      "DLP - Tx"
 #define D_SENSOR_PROJECTOR_CTRL_RX      "DLP - Rx"
 #define D_SENSOR_SHELLY_DIMMER_BOOT0    "SHD - Boot 0"
@@ -1343,5 +1355,14 @@
 #define D_SENSOR_V9240_RX "V9240 - RX"
 
 #define D_SENSOR_MBS_RX_ENA    "ModBr - RX ON"
+
+// xdrv_94_modbus_relay.ino
+#define D_MODBUSRELAY_TX         "MbsRelay - TX"
+#define D_MODBUSRELAY_TX_ENA     "MbsRelay - Abil. TX"
+#define D_MODBUSRELAY_RX         "MbsRelay - RX"
+#define D_MODBUSRELAY_RX_ENA     "MbsRelay - Abil. RX"
+
+// xdrv_89_esp32_shelly_emulation.ino
+#define D_SHELLY                 "Shelly"
 
 #endif  // _LANGUAGE_IT_IT_H_

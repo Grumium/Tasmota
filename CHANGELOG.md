@@ -3,7 +3,152 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] - Development
 
-## [15.4.0.2]
+## [15.6.0.3]
+### Added
+- LVGL option to prefer PSRAM for draw buffers using bit 5 (0x20) of `:B` in display.ini (#25120)
+- Matter support for Light RBG+CT (5 channels) and refactoring of lights
+- Initial support for ESP32-S31 (#25130)
+
+### Breaking Changed
+
+
+### Changed
+
+
+### Fixed
+- Unauthenticated UFS writes on web password enabled systems
+- Display dsi dma2d psram buffers (#24949)
+
+### Removed
+
+
+## [15.6.0.2] 20261008
+### Added
+- DALI-2 push button bindings to control gear targets with command `DaliBind` (toggle, on, off, up, down) (#25073)
+- Matter Electrical Power Measurement cluster to On/Off Plug-in Unit (#24922)
+- Matter Soil Sensor device type with Soil Measurement cluster (Matter 1.6.0) (#25088)
+- Matter physical and virtual Garage Door device types with Closure Control cluster (Matter 1.6.0) (#25089)
+- OpenTherm support the second heating circuit (CH2) (#25098)
+- Command `HwDump` to dump detailed hardware GPIO configuration (#25111)
+- BLE EQ3-TRV encryption support (#25113)
+
+### Changed
+- Shutter split `EnableEndStopTime` into `OpenEndStopTime` and `CloseEndStopTime` (#25020)
+- ESP8266 platform update from 2026.04.00 to 2026.09.00 (#25072)
+- ESP32 Platform from 2026.05.50 to 2026.09.50, Framework (Arduino Core) from v3.3.8 to v3.3.12 and IDF from v5.5.4.260407 to v5.5.5 (#25072)
+- IR accept raw data in JSON (#25077)
+- Matter update specs to 1.6.1 (to be used by AI) (#25083)
+- Refresh EQ3 web UI (#25105)
+- Disable CDC on esp-emu (#25112)
+
+### Fixed
+- Matter non-bridge endpoint topology (#25099)
+- MQTT false connected events when unconfigured (#25100)
+- PWM on CDC GPIO (#25106)
+
+## [15.6.0.1] 20260926
+### Added
+- Support for GUI tooltip on touch media like phones and tablets
+- ESP32 MiELHVAC Modbus RTU slave on a second RS485 port exposing all states and functions for PLC use with `#define USE_MIEL_HVAC_MODBUS_SLAVE` (#24982)
+- MiELHVAC climate control panel on the web UI main page (mode, target temperature, fan, vanes, air direction) with live state (#24984)
+- Support for TFA Dostmann Marbella 868MHz pool thermometer using a CC1101 (#24959)
+- Berry virtual button support
+- NeoPool AuxMode (#24998)
+- Berry `sortedmap` support for `json.dump` (#24999)
+- MiELHVAC Home Assistant MQTT discovery (#25027)
+- DALI-2 input device event messages (IEC 62386-103) from push buttons, occupancy and light sensors decoded and published for rules and MQTT (#25029)
+- DALI-2 control device commissioning and instance queries with commands `DaliDeviceScan` and `DaliDevice`  (#25029)
+- Support for MI32 Xiaomi Mi Body Composition Scale (MIBCS/MIBFS) (#25049)
+- MQTT 5.0 with focus on request/response (optional) (#25050)
+- RC522 throttle idle polling and add self-healing watchdog (#25052)
+
+### Changed
+- BLE EQ3-TRV code refactoring (#24978)
+- BLE MI32 display icons instead of data lines. disable by removing `#define USE_SENSOR_ICON`
+- MiELHVAC accepts `fan_only` as an alias for fan mode in `HVACSetMode` / `HVACSetHAMode` (Home Assistant) (#24992)
+- Command `SetOption46 201..255` init wait 1 to 55 seconds instead of 2010 to 2550 msec (#25035)
+- MQTT connection closed before TCP retransmission could deliver a delayed PINGRESP, now tolerates 2 unanswered pings (#25067)
+
+### Fixed
+- MiELHVAC Modbus and CC1101 GPIO names shown as `MbsRelay ...` due to a duplicate entry in the GPIO name table (#24992)
+- MiELHVAC Modbus length-based framing, queue writes, FC03 sensor mirror (#24993)
+- Zigbee deferred timer use after free, and the truncated backtrace that hid it (#24979)
+- Matter autoconfiguration after configuration reset (#24997)
+- Berry rare register allocation bug (#25010)
+- Restore default hostname `%s` functionality using topic name only, regression from v15.4.0.2 (#24731)
+- ESP32 release UART0 console when the template uses its pins (#25047)
+- WT32_ETH01 ethernet initialization (#25051)
+- Touch GT911 fix template (#25068)
+- Matter commissioning mDNS announcements (#25069)
+
+## [Released]
+
+## [15.6.0] 20260825
+- Release Sylvie
+
+## [15.5.0.2] 20260825
+### Added
+- Support for baudrate 74880 replacing 74700 (#24924)
+- Support for WiZ compatible IoTorero ESP-Now Remote Control additional buttons P5 to P7
+- Support for BLE BTHome in binary `tasmota32-bluetooth.bin` (#20763)
+- Berry extend `sortedmap` constructor (#24955)
+- Shelly Pro 2PM emulation for ESP32 (`Emulation 3`, disabled by default) (#24952)
+
+### Changed
+- Library `PubSubClient` renamed to `TasmotaPubSub`, hardening fixes and comprehensive non-regression tests (#24916)
+- Berry `json.dump()` works with subclasses of `map` and `list` (#24954)
+- Berry/MI32 improved dashboard and widget handling (#24972)
+- Keep the first panic in the ESP32 crash recorder (#24976)
+
+### Fixed
+- Can sniffer functionality (#18287)
+- Reset BLE scan flag on new operation (#24925)
+- Minor fixes in `LList` (#24927)
+- TLS fix public key fingerprint for ECDSA certificates (#24928)
+- HASPmota better support for `textarea` (#24946)
+- NeoPool issue with localized JSON keys (#24962)
+- NeoPool delocalize all JSON outputs (#24965)
+
+## [15.5.0.1] 20260725
+### Added
+- Berry `bytes` methods `setbits`/`getbits` transposed to native and support for big endian (#24857)
+- HASPmota ability to set default screen background on `p0b0` object (#24874)
+- Matter virtual IR HVAC thermostat support (#24821)
+- HASPmota and LVGL `stripes` widget (#24907)
+- MagicSwitch configurable masking window fixing problems with multiple false triggering (#24888)
+- TLS support for EC P-384 curve in server certificate (#24909)
+
+### Changed
+- MiElHVAC auto-enable i-See widevane when setting AirDirection (#24860)
+
+### Fixed
+- BLE EQ3 float output in mqtt messages regression from v15.4.0.2 (#24869)
+- Default button/switch actions on builds without rules regression from v15.4.0.2 (#24871)
+- PZEM/Modbus energy monitor Exception crash-loop on ESP8266 regression from v15.5.0 (#24883)
+- Udisp SPI for mono color display (#24899)
+
+## [15.5.0] 20260621
+- Release Sylvan
+
+## [15.4.0.3] 20260621
+### Added
+- Serial console support for Backspace when enabling `#define USE_SERIAL_BACKSPACE` (#24830)
+- Build copy firmware artifacts with ELF-extracted build timestamp (opt-in) (#24794)
+- Enhance Matter plugin functionality for On/Off control and add support for Global Scene Control and related commands (#24854)
+- Command `BSSid[1|2] [0|1|11:22:33:44:55:66]` to select fixed WiFi Access Point disabling `SetOption56` and `SetOption57` (#24394)
+
+### Changed
+- Sensirion_Core library from v0.7.2 to arduino-core v0.7.3
+- SCD30 library FrogmoreScd30 to Sensirion arduino-i2c-scd30 v1.1.1
+- SCD4x library FrogmoreScd40 to Sensirion arduino-i2c-scd4x v1.1.0
+- SPS30 library Sensirion arduino-i2c-sps30 v1.0.1
+- Code hardening replacing `strcat` and `strcpy` with safer alternatives (#24832)
+- Berry optimized solidified structures for code constants and maps (#24838)
+
+### Fixed
+- SML modbus/TCP on ESP32-p4 with only Ethernet shows "SML: could not connect TCP since wifi is down" (#24845)
+
+## [15.4.0.2] 20260603
 ### Added
 - Support for Modbus RX Enable GPIO (#24726)
 - Support for hostname generation using single-specifier Format() patterns (#24731)
@@ -13,9 +158,9 @@ All notable changes to this project will be documented in this file.
 - Berry manual tool to compare and verify solidification between C and Python (#24754)
 - ESP32 VID6608 hardware RMT support for Automotive gauge driver (#24759)
 - Support for uDisplay ST7305 (#24738)
-- Support for hosted MCU different from esp32c6
-
-### Breaking Changed
+- Support for hosted MCU other than esp32c6
+- Trigger events to Berry when `USE_RULES` is not enabled (#24796)
+- Support for Modbus Relays (#24812)
 
 ### Changed
 - ESP32 Platform from 2026.04.50 to 2026.05.50, Framework (Arduino Core) from v3.3.8 to v3.3.8.260506 and IDF v5.5.4.260407 (#24718)
@@ -28,6 +173,11 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - NeoPool possible overflow/div-zero errors and Hydrolysis module detection (#24724)
 - Seesaw encoder position tracking in light control mode (#24730)
+- I80 pushColors swap logic for parallel displays (#24766)
+- Crash when MQTT-TLS when tcp connection failed (#24798)
+- Berry `write(value:int | s:string) -> nil` internal argument parsing (#24800)
+- MiElHVAC sensor and settings out of sync (#24813)
+- SPS30 not detected on ESP8266 (#24780)
 
 ### Removed
 - `USE_UNIVERSAL_TOUCH` no more forced when `USE_UNIVERSAL_DISPLAY` is enabled (#24743)
@@ -45,8 +195,6 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - ESP32 Platform from 2025.04.30 to 2026.04.50, Framework (Arduino Core) from v3.1.11 to v3.3.8 and IDF from v5.3.4.260127 to v5.5.4.260407 (#24676)
 - Berry solidification cache (#24710)
-
-## [Released]
 
 ## [15.4.0] 20260422
 - Release Sybil
