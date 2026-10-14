@@ -197,9 +197,9 @@ uint8_t opc_idx   = 0;
 #define OPC opc[opc_idx]
 
 // Type known, not overridden, fan and laser on: derived data is meaningful.
-bool OPCReady(const OPC_T &o) {
-  return (o.mode & 0x0F) && !(o.mode & OPC_OVERRIDE)
-      && (o.mode & OPC_FONOFF) && (o.mode & OPC_LONOFF);
+bool OPCReady(uint16_t mode) {
+  return (mode & 0x0F) && !(mode & OPC_OVERRIDE)
+      && (mode & OPC_FONOFF) && (mode & OPC_LONOFF);
 }
 
 // Maps the type bit in mode (N2=1, N3=2, R1=4, R2=8) to the matching column
@@ -702,7 +702,7 @@ extern "C" {
 
   bbool be_opc_ready(struct bvm *vm, int32_t idx) {
     const OPC_T *o = OPCBerrySensor(idx);
-    return o && OPCReady(*o);
+    return o && OPCReady(o->mode);
   }
 
   int32_t be_opc_gain(struct bvm *vm, int32_t idx) {
@@ -825,7 +825,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     OPC.data.isFirst = false;  // consume – avoids duplicate display until next packet
   }
 
-  if (!OPCReady(OPC)) {
+  if (!OPCReady(OPC.mode)) {
       if (json) { 
         ResponseJsonEnd(); 
       }
@@ -856,7 +856,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     bool rdy[OPC_MAX_SENSORS];
     bool any_ready = false, any_n3h = false;
     for (uint8_t i = 0; i < opc_count; i++) {
-      rdy[i] = OPCReady(opc[i]);
+      rdy[i] = OPCReady(opc[i].mode);
       if (rdy[i]) any_ready = true;
       if (rdy[i] && (opc[i].mode & OPC_PMHIST)
           && ((1U << __builtin_ctz(opc[i].mode & 0x0F)) == OPC_TYPE_N3))
