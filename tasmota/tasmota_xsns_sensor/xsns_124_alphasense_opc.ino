@@ -181,6 +181,9 @@ struct OPC_T {
 
     float temp, humi, abs_humi, flow, period;
     char concstr[144];
+    float conc[24];                          // concstr as numbers, hist_n of them valid
+    uint8_t hist_n;
+    uint16_t seq;                            // counts derived data sets, wraps
 
     bool available;
     bool isFirst;
@@ -192,6 +195,12 @@ OPC_T opc[OPC_MAX_SENSORS];
 uint8_t opc_count = 0;
 uint8_t opc_idx   = 0;
 #define OPC opc[opc_idx]
+
+// Type known, not overridden, fan and laser on: derived data is meaningful.
+bool OPCReady(const OPC_T &o) {
+  return (o.mode & 0x0F) && !(o.mode & OPC_OVERRIDE)
+      && (o.mode & OPC_FONOFF) && (o.mode & OPC_LONOFF);
+}
 
 // Maps the type bit in mode (N2=1, N3=2, R1=4, R2=8) to the matching column
 // index in OPCCommand[].val, or -1 while no type is known. The type bits are
@@ -317,13 +326,17 @@ static void OPCProcessMeasurements(void) {
       for (uint8_t bi = 0; bi < 24; bi++) { if (n3->bins[bi]) { bins_zero = false; break; } }
       if (n3->flow == 0 || n3->period == 0 || bins_zero) {
         strlcpy(OPC.data.concstr, kBinsZeroString, sizeof(OPC.data.concstr));
+        memset(OPC.data.conc, 0, sizeof(OPC.data.conc));
+        OPC.data.hist_n = 24;
         OPC.data.flow = 0.0f;
       } else {
         OPC.data.concstr[0] = '\0';
         const float norm = 10000.0f / ((uint32_t)n3->period * n3->flow);
         uint8_t bin_count = (OPC.status.gain == 0 || OPC.status.gain == 1) ? 12 : 24;
+        OPC.data.hist_n = bin_count;
         for (uint8_t i = 0; i < bin_count; ++i) {
           const float conc = n3->bins[i] * norm;
+          OPC.data.conc[i] = conc;
           char        tmp[16];
           dtostrfd(conc, 2, tmp);
           strlcat(OPC.data.concstr, tmp, sizeof(OPC.data.concstr));
@@ -346,6 +359,7 @@ static void OPCProcessMeasurements(void) {
   }
 
   OPC.data.isFirst     = true;   // derived data ready for display
+  OPC.data.seq++;
   OPC.data.available = false;  // consume raw buffer
 }
 
@@ -665,6 +679,94 @@ void OPCSelectMode(uint16_t mode)
   }
 }
 
+#ifdef USE_BERRY
+/*********************************************************************************************\
+ * Berry module opc: the sensor state without JSON, rules or allocation.
+ *
+ * Every getter takes the sensor index 0..opc_count-1 and returns 0 for an index that is out of range.
+ * opc.seq(i) counts the derived data sets and wraps at 65536: a changed value is new data.
+\*********************************************************************************************/
+#include <berry.h>
+
+extern "C" {
+  static const OPC_T *OPCBerrySensor(int32_t idx) {
+    return (idx >= 0 && idx < opc_count) ? &opc[idx] : nullptr;
+  }
+
+  int32_t be_opc_count(struct bvm *vm) { return opc_count; }
+
+  int32_t be_opc_mode(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->mode : 0;
+  }
+
+  bbool be_opc_ready(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o && OPCReady(*o);
+  }
+
+  int32_t be_opc_gain(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->status.gain : 0;
+  }
+
+  int32_t be_opc_seq(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.seq : 0;
+  }
+
+  // k = 0..2 for the three PM channels, in the order of the JSON PM keys
+  float be_opc_pm(struct bvm *vm, int32_t idx, int32_t k) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    if (!o || k < 0 || k > 2) { return 0.0f; }
+    return (&o->data.pm.a)[k];
+  }
+
+  // Diameter in um of PM channel k (2.5 for PM2_5)
+  float be_opc_pm_dia(struct bvm *vm, int32_t idx, int32_t k) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    if (!o || k < 0 || k > 2) { return 0.0f; }
+    return CharToFloat(k == 0 ? o->data.pm.dia_a : (k == 1 ? o->data.pm.dia_b : o->data.pm.dia_c));
+  }
+
+  // Number of valid bins in opc.hist(): 12 or 24, depending on the gain
+  int32_t be_opc_hist_n(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.hist_n : 0;
+  }
+
+  float be_opc_hist(struct bvm *vm, int32_t idx, int32_t bin) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return (o && bin >= 0 && bin < o->data.hist_n) ? o->data.conc[bin] : 0.0f;
+  }
+
+  float be_opc_flow(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.flow : 0.0f;
+  }
+
+  float be_opc_period(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.period : 0.0f;
+  }
+
+  float be_opc_temp(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.temp : 0.0f;
+  }
+
+  float be_opc_humi(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.humi : 0.0f;
+  }
+
+  float be_opc_abs_humi(struct bvm *vm, int32_t idx) {
+    const OPC_T *o = OPCBerrySensor(idx);
+    return o ? o->data.abs_humi : 0.0f;
+  }
+}
+#endif  // USE_BERRY
+
 void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
   for (opc_idx = 0; opc_idx < opc_count; opc_idx++) {
   // JSON-Key: "OPC" bei 1 Sensor, "OPC-1"/"OPC-2" bei mehreren
@@ -723,11 +825,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     OPC.data.isFirst = false;  // consume – avoids duplicate display until next packet
   }
 
-  if ((!(OPC.mode & 0x0F))
-      || (OPC.mode & OPC_OVERRIDE)
-      || (!(OPC.mode & OPC_FONOFF))
-      || (!(OPC.mode & OPC_LONOFF)))
-      {
+  if (!OPCReady(OPC)) {
       if (json) { 
         ResponseJsonEnd(); 
       }
@@ -758,8 +856,7 @@ void OPCShow(bool json) { // Wird so oft aufgerufen wie read_sensors()
     bool rdy[OPC_MAX_SENSORS];
     bool any_ready = false, any_n3h = false;
     for (uint8_t i = 0; i < opc_count; i++) {
-      rdy[i] = (opc[i].mode & 0x0F) && !(opc[i].mode & OPC_OVERRIDE)
-            && (opc[i].mode & OPC_FONOFF) && (opc[i].mode & OPC_LONOFF);
+      rdy[i] = OPCReady(opc[i]);
       if (rdy[i]) any_ready = true;
       if (rdy[i] && (opc[i].mode & OPC_PMHIST)
           && ((1U << __builtin_ctz(opc[i].mode & 0x0F)) == OPC_TYPE_N3))
