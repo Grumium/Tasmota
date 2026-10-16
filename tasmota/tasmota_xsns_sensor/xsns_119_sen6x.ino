@@ -45,6 +45,9 @@
  * Sen6xCal          - [CO₂] Auto self calibration Off/On or Correction
  * Sen6xCal <0|1|351..10000>
  * 
+ * JSON "NC": number concentrations in #/cm3, cumulative from the 0.3 um lower limit:
+ *   [NC0.5, NC1.0, NC2.5, NC4.0, NC10] (0.3-0.5, 0.3-1.0, ... 0.3-10 um)
+ *
  * I2C Address: 0x6B
 \*********************************************************************************************/
 
@@ -71,6 +74,8 @@ struct SEN6XDATA_s {
   uint16_t massConcentrationPm2p5;
   uint16_t massConcentrationPm4p0;
   uint16_t massConcentrationPm10p0;
+  uint16_t numberConcentration[5];      // PM0.5, PM1.0, PM2.5, PM4.0, PM10 in #/cm3 * 10
+  uint16_t seq;                         // counts successful measurement reads (Berry sen6x.seq)
   uint16_t co2;
   uint16_t hcho;
   int16_t humidity;
@@ -236,9 +241,17 @@ void Sen6xUpdate(void) {
         SEN6XDATA->noxIndex = noxIndex;
         SEN6XDATA->co2 = co2;
         SEN6XDATA->hcho = hcho;
+        SEN6XDATA->seq++;
 #ifdef USE_LIGHT
         LightSetSignal(CO2_LOW, CO2_HIGH, SEN6XDATA->co2);  // SetOption18 - Pair light signal with CO2 sensor
 #endif  // USE_LIGHT
+      }
+      {
+        uint16_t nc[5];
+        if (!Sen6xError("NumberConcentration", sen6x.readNumberConcentrationValuesAsIntegers(
+          nc[0], nc[1], nc[2], nc[3], nc[4]))) {
+          memcpy(SEN6XDATA->numberConcentration, nc, sizeof(nc));
+        }
       }
       break;
     case SEN6X_STATE_START_MEASUREMENT -1:
@@ -511,6 +524,9 @@ void Sen6xShow(bool json) {
     ResponseAppend_P(PSTR(",\"%s\":{\"PM1\":%1_f,\"PM2.5\":%1_f,\"PM4\":%1_f,\"PM10\":%1_f"),
       SEN6XDATA->name,
       &massConcentrationPm1p0, &massConcentrationPm2p5, &massConcentrationPm4p0, &massConcentrationPm10p0);
+    float nc[5];
+    for (uint32_t i = 0; i < 5; i++) { nc[i] = Sen6xUInt16Div10(SEN6XDATA->numberConcentration[i]); }
+    ResponseAppend_P(PSTR(",\"NC\":[%1_f,%1_f,%1_f,%1_f,%1_f]"), &nc[0], &nc[1], &nc[2], &nc[3], &nc[4]);
     if (SEN6XDATA->features & SEN6X_CO2) {
       ResponseAppend_P(PSTR(",\"" D_JSON_CO2 "\":%0_f"), &co2);
     }
@@ -544,6 +560,35 @@ void Sen6xShow(bool json) {
 #endif
   }
 }
+
+#ifdef USE_BERRY
+/*********************************************************************************************\
+ * Berry module sen6x: PM and number concentrations without the sensor JSON, nothing allocated.
+ * sen6x.seq() counts the measurement reads (one per second, wraps at 65536): a changed value
+ * is a new reading. pm(k): k 0..3 = PM1, PM2.5, PM4, PM10 in ug/m3; nc(k): k 0..4 = number
+ * concentration in #/cm3 for 0.5, 1, 2.5, 4, 10 um, cumulative from 0.3 um. -1 = no value.
+\*********************************************************************************************/
+#include <berry.h>
+
+extern "C" {
+  bbool be_sen6x_ready(struct bvm *vm) { return SEN6XDATA && SEN6XDATA->seq; }
+
+  int32_t be_sen6x_seq(struct bvm *vm) { return SEN6XDATA ? SEN6XDATA->seq : 0; }
+
+  float be_sen6x_pm(struct bvm *vm, int32_t k) {
+    if (!SEN6XDATA || k < 0 || k > 3) { return -1.0f; }
+    const uint16_t pm[4] = { SEN6XDATA->massConcentrationPm1p0, SEN6XDATA->massConcentrationPm2p5,
+                             SEN6XDATA->massConcentrationPm4p0, SEN6XDATA->massConcentrationPm10p0 };
+    return (pm[k] == SEN6X_UINT_INVALID) ? -1.0f : pm[k] / 10.0f;
+  }
+
+  float be_sen6x_nc(struct bvm *vm, int32_t k) {
+    if (!SEN6XDATA || k < 0 || k > 4) { return -1.0f; }
+    uint16_t v = SEN6XDATA->numberConcentration[k];
+    return (v == SEN6X_UINT_INVALID) ? -1.0f : v / 10.0f;
+  }
+}
+#endif  // USE_BERRY
 
 /*********************************************************************************************\
  * Interface

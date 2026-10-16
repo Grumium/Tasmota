@@ -96,9 +96,11 @@ struct BMV080_State {
 
   struct {
     uint16_t pm1 = 0, pm25 = 0, pm10 = 0;
+    float nc1 = 0, nc25 = 0, nc10 = 0;   // number concentrations PM1/PM2.5/PM10 in #/cm3 (cumulative)
     bool  obstructed = false;
     bool  out_of_range = false;
     bool  valid = false;
+    uint16_t seq = 0;                    // counts data-ready callbacks (Berry bmv080.seq)
   } last;
 };
 static BMV080_State BMV;
@@ -201,6 +203,9 @@ static bmv080_callback_data_ready_t BMV080_DataReady = [](bmv080_output_t out, v
   BMV.last.pm1          = (uint16_t)out.pm1_mass_concentration;
   BMV.last.pm25         = (uint16_t)out.pm2_5_mass_concentration;
   BMV.last.pm10         = (uint16_t)out.pm10_mass_concentration;
+  BMV.last.nc1          = out.pm1_number_concentration;
+  BMV.last.nc25         = out.pm2_5_number_concentration;
+  BMV.last.nc10         = out.pm10_number_concentration;
   if (out.is_obstructed != BMV.last.obstructed) {
     AddLog(LOG_LEVEL_INFO, PSTR("BMV080: obstruction %s"),
            out.is_obstructed ? PSTR("detected") : PSTR("cleared"));
@@ -208,6 +213,7 @@ static bmv080_callback_data_ready_t BMV080_DataReady = [](bmv080_output_t out, v
   BMV.last.obstructed   = out.is_obstructed;
   BMV.last.out_of_range = out.is_outside_measurement_range;
   BMV.last.valid        = true;
+  BMV.last.seq++;
   BMV.last_data_ms      = millis();
 };
 
@@ -474,8 +480,10 @@ static void BMV080_Show(bool json) {
   if (!BMV080_Active() || !BMV.last.valid) return;
   if (json) {
     ResponseAppend_P(PSTR(",\"BMV080\":{\"PM1\":%u,\"PM2.5\":%u,\"PM10\":%u,"
+                          "\"NC\":[%1_f,%1_f,%1_f],"
                           "\"Obstruct\":%u,\"OutOfRange\":%u}"),
                      BMV.last.pm1, BMV.last.pm25, BMV.last.pm10,
+                     &BMV.last.nc1, &BMV.last.nc25, &BMV.last.nc10,
                      BMV.last.obstructed, BMV.last.out_of_range);
   }
 #ifdef USE_WEBSERVER
@@ -627,6 +635,34 @@ static void BMV080_Detect(void) {
     return;
   }
 }
+
+#ifdef USE_BERRY
+/*********************************************************************************************\
+ * Berry module bmv080: PM and number concentrations without the sensor JSON, nothing allocated.
+ * bmv080.seq() counts the SDK data-ready callbacks (wraps at 65536): a changed value is a new
+ * reading. pm(k): k 0..2 = PM1, PM2.5, PM10 in ug/m3; nc(k): k 0..2 = number concentration in
+ * #/cm3 up to 1, 2.5, 10 um (cumulative); obstructed(). -1 = no value.
+\*********************************************************************************************/
+#include <berry.h>
+
+extern "C" {
+  bbool be_bmv080_ready(struct bvm *vm) { return BMV.last.valid; }
+
+  int32_t be_bmv080_seq(struct bvm *vm) { return BMV.last.seq; }
+
+  float be_bmv080_pm(struct bvm *vm, int32_t k) {
+    if (!BMV.last.valid || k < 0 || k > 2) { return -1.0f; }
+    return (0 == k) ? BMV.last.pm1 : (1 == k) ? BMV.last.pm25 : BMV.last.pm10;
+  }
+
+  float be_bmv080_nc(struct bvm *vm, int32_t k) {
+    if (!BMV.last.valid || k < 0 || k > 2) { return -1.0f; }
+    return (0 == k) ? BMV.last.nc1 : (1 == k) ? BMV.last.nc25 : BMV.last.nc10;
+  }
+
+  bbool be_bmv080_obstructed(struct bvm *vm) { return BMV.last.obstructed; }
+}
+#endif  // USE_BERRY
 
 /*********************************************************************************************\
  * Interface

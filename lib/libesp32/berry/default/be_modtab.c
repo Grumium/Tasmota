@@ -80,6 +80,12 @@ be_extern_native_module(BLEAdv);
 #ifdef USE_OPC
 be_extern_native_module(opc);
 #endif // USE_OPC
+#ifdef USE_SEN6X
+be_extern_native_module(sen6x);
+#endif // USE_SEN6X
+#ifdef USE_BMV080
+be_extern_native_module(bmv080);
+#endif // USE_BMV080
 #ifdef USE_LVGL
 be_extern_native_module(lv);
 be_extern_native_module(lv_extra);
@@ -229,6 +235,12 @@ BERRY_LOCAL const bntvmodule_t* const be_module_table[] = {
 #ifdef USE_OPC
     &be_native_module(opc),
 #endif // USE_OPC
+#ifdef USE_SEN6X
+    &be_native_module(sen6x),
+#endif // USE_SEN6X
+#ifdef USE_BMV080
+    &be_native_module(bmv080),
+#endif // USE_BMV080
 #ifdef USE_BERRY_CAM
     &be_native_module(cam),
 #endif 
