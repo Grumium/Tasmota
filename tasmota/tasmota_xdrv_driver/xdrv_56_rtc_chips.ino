@@ -37,6 +37,9 @@
  *   Used by MSB Master G2
  * #define RTC_NTP_SERVER
  *   NTP server from the chip's time, phase from upstream NTP (enables USE_NTP_SERVER)
+ * #define USE_RTC_CHIP_HOLDOVER
+ *   Chip phase to about 0.1 ms and its rate record, for a restart without GPS or network
+ *   Default with USE_GPS, DISABLE_RTC_CHIP_HOLDOVER drops it
 \*********************************************************************************************/
 
 #define XDRV_56             56
@@ -51,6 +54,17 @@
 struct {
   uint32_t (* ReadTime)(void);
   void (* SetTime)(uint32_t);
+#ifdef USE_RTC_CHIP_HOLDOVER
+  // Optional: set the time with the chip stopped, start it at the second (sets the phase)
+  void (* SetTimeHeld)(uint32_t);
+  void (* ReleaseTime)(void);
+  bool (* AuxWrite)(uint32_t value);
+  bool (* AuxRead)(uint32_t* value);
+  uint32_t release_flip_us;         // us from start to the first second step: BM8563 1 s, PCF85063 0.5 s
+  uint8_t seconds_reg;              // Seconds register, 0 = no phase machinery
+  uint8_t drift_reg;                // Register for the ESP drift, 0 = none
+  bool stopped;                     // Found stopped at boot: a set was cut off, the time is lost
+#endif  // USE_RTC_CHIP_HOLDOVER
   int32_t (* MemRead)(uint8_t *, uint32_t);
   int32_t (* MemWrite)(uint8_t *, uint32_t);
   void (* ShowSensor)(bool);
@@ -60,6 +74,18 @@ struct {
   uint8_t phase_polls;              // Reads waiting for the step
   uint8_t phase_tries;              // Retries after a read gap too wide
   uint32_t phase_audit;             // Uptime of the last phase check
+#ifdef USE_RTC_CHIP_HOLDOVER
+  bool release_pending;             // Time written, chip stopped, waiting for the second
+  uint32_t release_armed_ms;        // millis() when the chip was stopped
+  uint32_t release_utc;             // Second written to the chip
+  uint8_t release_reloads;          // Reloads while stopped
+  bool phase_coarse;                // Our phase came from a coarse chip read
+  int32_t phase_limit;              // Max phase error at the next check, ms, 0 = default
+  bool set_pending;                 // Set the chip at the next second
+  bool fix_seconds;                 // Only the seconds are wrong
+  bool net_reseat;                  // Set from upstream NTP
+  uint8_t armed_stratum;            // Clock stratum when the set was requested
+#endif  // USE_RTC_CHIP_HOLDOVER
 #endif  // USE_NTP_SERVER
   bool detected;
   int8_t mem_size = -1;
@@ -67,6 +93,60 @@ struct {
   uint8_t bus;
   char name[10];
 } RtcChip;
+#ifdef USE_RTC_CHIP_HOLDOVER
+// Record in the four alarm registers (minute, hour, day, weekday: 7 + 6 + 6 + 3 bits). The alarm
+// disable bit stays set in each. BM8563 and PCF85063A have the same layout
+bool RtcAuxWriteAt(uint8_t addr, uint8_t base, uint32_t v) {
+  uint8_t alarm[4] = { (uint8_t)(0x80 | (v & 0x7F)),        (uint8_t)(0x80 | ((v >> 7) & 0x3F)),
+                       (uint8_t)(0x80 | ((v >> 13) & 0x3F)), (uint8_t)(0x80 | ((v >> 19) & 0x07)) };
+  for (uint32_t i = 0; i < 4; i++) {
+    if (!I2cWrite8(addr, base + i, alarm[i], RtcChip.bus)) { return false; }
+  }
+  return true;
+}
+
+// false if the clock was lost (seconds bit 7, VL / OS) or an alarm is in use
+bool RtcAuxReadAt(uint8_t addr, uint8_t base, uint8_t seconds_reg, uint32_t* v) {
+  uint8_t r[4], sec;
+  if (!I2cValidRead8(&sec, addr, seconds_reg, RtcChip.bus) || (sec & 0x80)) { return false; }
+  for (uint32_t i = 0; i < 4; i++) {
+    if (!I2cValidRead8(&r[i], addr, base + i, RtcChip.bus)) { return false; }
+    if (!(r[i] & 0x80)) { return false; }                         // Alarm in use
+  }
+  *v = (r[0] & 0x7F) | ((uint32_t)(r[1] & 0x3F) << 7) | ((uint32_t)(r[2] & 0x3F) << 13) |
+       ((uint32_t)(r[3] & 0x07) << 19);
+  return true;
+}
+
+// Record in three free bytes (RAM, or unused timer and alarm registers)
+bool RtcAuxWriteRegs(const uint8_t* reg, uint32_t v) {
+  for (uint32_t i = 0; i < 3; i++) {
+    if (!I2cWrite8(RtcChip.address, reg[i], (v >> (8 * i)) & 0xFF, RtcChip.bus)) { return false; }
+  }
+  return true;
+}
+
+bool RtcAuxReadRegs(const uint8_t* reg, uint32_t* v) {
+  uint8_t b;
+  *v = 0;
+  for (uint32_t i = 0; i < 3; i++) {
+    if (!I2cValidRead8(&b, RtcChip.address, reg[i], RtcChip.bus)) { return false; }
+    *v |= (uint32_t)b << (8 * i);
+  }
+  return true;
+}
+
+uint8_t RtcChipReadSeconds(void) {
+  uint8_t sec;
+  if (!I2cValidRead8(&sec, RtcChip.address, RtcChip.seconds_reg, RtcChip.bus)) { return 0xFF; }
+  return sec & 0x7F;                                              // Bit 7 is VL / OS on some chips
+}
+
+// DS3231, RV-3028: writing the seconds register restarts the second
+void RtcChipRewriteSeconds(void) {
+  I2cWrite8(RtcChip.address, RtcChip.seconds_reg, Dec2Bcd(RtcChip.release_utc % 60), RtcChip.bus);
+}
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*********************************************************************************************\
  * RV-3028-C7 RTC Controller
@@ -166,6 +246,12 @@ void RV3028SetTime(uint32_t epoch_time) {
   // Enable LSM mode (VBACKUP)
   RV3028_EnableDSM();
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+static const uint8_t kRv3028Aux[3] = { 0x1F, 0x20, 0x0A };       // User RAM 1 and 2, Timer Value 0
+
+bool RV3028AuxWrite(uint32_t v) { return RtcAuxWriteRegs(kRv3028Aux, v); }
+bool RV3028AuxRead(uint32_t* v) { return RtcAuxReadRegs(kRv3028Aux, v); }
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*-------------------------------------------------------------------------------------------*\
  * Detection
@@ -184,6 +270,15 @@ void RV3028Detected(void) {
         strcpy_P(RtcChip.name, PSTR("RV3028"));
         RtcChip.ReadTime = &RV3028ReadTime;
         RtcChip.SetTime  = &RV3028SetTime;
+#ifdef USE_RTC_CHIP_HOLDOVER
+        RtcChip.SetTimeHeld = &RV3028SetTime;
+        RtcChip.ReleaseTime = &RtcChipRewriteSeconds;
+        RtcChip.release_flip_us = 1000000;
+        RtcChip.seconds_reg = RV3028_SECONDS;
+        RtcChip.AuxWrite = &RV3028AuxWrite;
+        RtcChip.AuxRead = &RV3028AuxRead;
+        RtcChip.drift_reg = 0x07;                // Minutes alarm, alarm unused
+#endif  // USE_RTC_CHIP_HOLDOVER
         RtcChip.mem_size = 2; // RAM 2 byte
         break;
       }
@@ -307,6 +402,10 @@ void DS3231SetTime(uint32_t epoch_time) {
   I2cWrite8(RtcChip.address, DS3231_YEAR, Dec2Bcd(true_year), RtcChip.bus);
   I2cWrite8(RtcChip.address, DS3231_STATUS, I2cRead8(RtcChip.address, DS3231_STATUS, RtcChip.bus) & ~_BV(DS3231_OSF), RtcChip.bus);
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+bool DS3231AuxWrite(uint32_t v) { return RtcAuxWriteAt(RtcChip.address, 0x07, v); }    // Alarm 1
+bool DS3231AuxRead(uint32_t* v) { return RtcAuxReadAt(RtcChip.address, 0x07, DS3231_SECONDS, v); }
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*-------------------------------------------------------------------------------------------*\
  * Detection
@@ -321,6 +420,15 @@ void DS3231Detected(void) {
         strcpy_P(RtcChip.name, PSTR("DS3231"));
         RtcChip.ReadTime = &DS3231ReadTime;
         RtcChip.SetTime = &DS3231SetTime;
+#ifdef USE_RTC_CHIP_HOLDOVER
+        RtcChip.SetTimeHeld = &DS3231SetTime;
+        RtcChip.ReleaseTime = &RtcChipRewriteSeconds;
+        RtcChip.release_flip_us = 1000000;
+        RtcChip.seconds_reg = DS3231_SECONDS;
+        RtcChip.AuxWrite = &DS3231AuxWrite;
+        RtcChip.AuxRead = &DS3231AuxRead;
+        RtcChip.drift_reg = 0x0B;                // Alarm 2 minutes
+#endif  // USE_RTC_CHIP_HOLDOVER
 #ifdef DS3231_ENABLE_TEMP
         RtcChip.ShowSensor = &D3231ShowSensor;
 #endif
@@ -414,6 +522,46 @@ void Pcf85063SetTime(uint32_t epoch_time) {
   myWire.write(bcd_year);
   myWire.endTransmission();
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+#define PCF85063_CTRL1_STOP     0x20                // Bit 5, stops the clock
+#define PCF85063_CTRL1_SR       0x10                // Bit 4, software reset
+#define PCF85063_REG_ALARM_MIN  0x0C                // PCF85063A only
+
+uint8_t pcf85063_ctrl1 = 0;                         // Control_1 at start (keeps CAP_SEL)
+
+void Pcf85063SetTimeHeld(uint32_t epoch_time) {
+  I2cWrite8(RtcChip.address, PCF85063_REG_CTRL1, pcf85063_ctrl1 | PCF85063_CTRL1_STOP, RtcChip.bus);
+  Pcf85063SetTime(epoch_time);
+}
+
+void Pcf85063Release(void) {
+  I2cWrite8(RtcChip.address, PCF85063_REG_CTRL1, pcf85063_ctrl1, RtcChip.bus);   // Start the clock
+}
+
+// Writing the time does not restart the second: stop, write, start
+void Pcf85063SetTimeRestart(uint32_t epoch_time) {
+  Pcf85063SetTimeHeld(epoch_time);
+  Pcf85063Release();
+}
+
+bool Pcf85063AuxWrite(uint32_t v) {
+  return RtcAuxWriteAt(RtcChip.address, PCF85063_REG_ALARM_MIN, v);
+}
+
+bool Pcf85063AuxRead(uint32_t* v) {
+  return RtcAuxReadAt(RtcChip.address, PCF85063_REG_ALARM_MIN, PCF85063_REG_SECONDS, v);
+}
+
+// PCF85063A has alarm registers, PCF85063TP has none above 0x0A (reads 0x80). Write a test value
+// and read it back, the alarm stays disabled
+bool Pcf85063HasAlarms(void) {
+  uint8_t back = 0;
+  if (!I2cWrite8(RtcChip.address, 0x0B, 0x80 | 0x55, RtcChip.bus)) { return false; }
+  bool kept = I2cValidRead8(&back, RtcChip.address, 0x0B, RtcChip.bus) && ((0x80 | 0x55) == back);
+  I2cWrite8(RtcChip.address, 0x0B, 0x80, RtcChip.bus);
+  return kept;
+}
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*-------------------------------------------------------------------------------------------*\
  * Detection
@@ -430,6 +578,24 @@ void Pcf85063Detected(void) {
         strcpy_P(RtcChip.name, PSTR("PCF85063"));
         RtcChip.ReadTime = &Pcf85063ReadTime;
         RtcChip.SetTime  = &Pcf85063SetTime;
+#ifdef USE_RTC_CHIP_HOLDOVER
+        I2cValidRead8(&pcf85063_ctrl1, RtcChip.address, PCF85063_REG_CTRL1, RtcChip.bus);
+        RtcChip.stopped = (pcf85063_ctrl1 & PCF85063_CTRL1_STOP);
+        pcf85063_ctrl1 &= ~(PCF85063_CTRL1_STOP | PCF85063_CTRL1_SR);   // Keep CAP_SEL and 12_24
+        RtcChip.SetTime = &Pcf85063SetTimeRestart;
+        RtcChip.release_flip_us = 500000;          // Steps 0.5 s after the start
+        RtcChip.SetTimeHeld = &Pcf85063SetTimeHeld;
+        RtcChip.ReleaseTime = &Pcf85063Release;
+        RtcChip.seconds_reg = PCF85063_REG_SECONDS;
+        if (Pcf85063HasAlarms()) {                   // PCF85063A
+          RtcChip.AuxWrite = &Pcf85063AuxWrite;
+          RtcChip.AuxRead = &Pcf85063AuxRead;
+          RtcChip.drift_reg = 0x03;                // RAM_byte
+        }
+        AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: PCF85063%s, control 0x%02X"), RtcChip.AuxRead ? PSTR("A") : PSTR("TP"),
+          pcf85063_ctrl1);
+        Pcf85063Release();
+#endif  // USE_RTC_CHIP_HOLDOVER
         RtcChip.mem_size = -1;    // Nemá extra user RAM, ak by si nepotreboval
         // Ak by si chcel implementovať MemRead/MemWrite, doplň RtcChip.MemRead a RtcChip.MemWrite
         break;
@@ -484,6 +650,38 @@ void BM8563SetUtc(uint32_t epoch_time) {
   RTCdate.Year = tm.year + 1970;
   Bm8563Rtc.SetDate(&RTCdate);
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+
+#define BM8563_REG_CTRL1   0x00
+#define BM8563_CTRL1_STOP  0x20                                   // bit 5
+
+void BM8563SetUtcHeld(uint32_t epoch_time) {
+  I2cWrite8(BM8563_ADRESS, BM8563_REG_CTRL1, BM8563_CTRL1_STOP, RtcChip.bus);   // Stop the clock
+  BM8563SetUtc(epoch_time);
+}
+
+void BM8563Release(void) {
+  I2cWrite8(BM8563_ADRESS, BM8563_REG_CTRL1, 0x00, RtcChip.bus);  // Start the clock
+}
+
+#define BM8563_REG_SECONDS 0x02                                   // Bit 7 is VL
+
+#define BM8563_REG_ALARM_MIN  0x09
+
+bool BM8563AuxWrite(uint32_t v) {
+  return RtcAuxWriteAt(BM8563_ADRESS, BM8563_REG_ALARM_MIN, v);
+}
+
+bool BM8563AuxRead(uint32_t* v) {
+  return RtcAuxReadAt(BM8563_ADRESS, BM8563_REG_ALARM_MIN, BM8563_REG_SECONDS, v);
+}
+
+// Writing the time does not restart the second: stop, write, start
+void BM8563SetUtcRestart(uint32_t epoch_time) {
+  BM8563SetUtcHeld(epoch_time);
+  BM8563Release();
+}
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*-------------------------------------------------------------------------------------------*\
  * Detection
@@ -493,11 +691,28 @@ void BM8563Detected(void) {
     RtcChip.address = BM8563_ADRESS;
     for (RtcChip.bus = 0; RtcChip.bus < MAX_I2C; RtcChip.bus++) {
       if (!I2cSetDevice(RtcChip.address, RtcChip.bus)) { continue; }
+#ifdef USE_RTC_CHIP_HOLDOVER
+      uint8_t ctrl1 = 0;
+      RtcChip.stopped = I2cValidRead8(&ctrl1, BM8563_ADRESS, BM8563_REG_CTRL1, RtcChip.bus) &&
+                        (ctrl1 & BM8563_CTRL1_STOP);              // Read before begin() clears it
+#endif  // USE_RTC_CHIP_HOLDOVER
       Bm8563Rtc.begin(&I2cGetWire(RtcChip.bus));
       RtcChip.detected = 1;
       strcpy_P(RtcChip.name, PSTR("BM8563"));
       RtcChip.ReadTime = &BM8563GetUtc;
+#ifdef USE_RTC_CHIP_HOLDOVER
+      RtcChip.SetTime = &BM8563SetUtcRestart;
+      RtcChip.release_flip_us = 1000000;
+      RtcChip.SetTimeHeld = &BM8563SetUtcHeld;
+      RtcChip.ReleaseTime = &BM8563Release;
+      RtcChip.seconds_reg = BM8563_REG_SECONDS;
+      RtcChip.AuxWrite = &BM8563AuxWrite;
+      RtcChip.AuxRead = &BM8563AuxRead;
+      RtcChip.drift_reg = 0x0F;                  // Timer value, used while the timer is off
+      BM8563Release();
+#else
       RtcChip.SetTime = &BM8563SetUtc;
+#endif  // USE_RTC_CHIP_HOLDOVER
       RtcChip.mem_size = -1;
       break;
     }
@@ -577,6 +792,27 @@ void Pcf85363SetTime(uint32_t epoch_time) {
   for (uint32_t i = 0; i < 8; i++) { myWire.write(buffer[i]); }
   myWire.endTransmission();
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+void Pcf85363SetTimeHeld(uint32_t epoch_time) {
+  I2cWrite8(RtcChip.address, 0x2E, 0x01, RtcChip.bus);             // Stop the clock
+  I2cWrite8(RtcChip.address, 0x2F, 0xA4, RtcChip.bus);             // Clear the prescaler
+  Pcf85363SetTime(epoch_time);
+}
+
+void Pcf85363Release(void) {
+  I2cWrite8(RtcChip.address, 0x2E, 0x00, RtcChip.bus);             // Start the clock
+}
+
+void Pcf85363SetTimeRestart(uint32_t epoch_time) {
+  Pcf85363SetTimeHeld(epoch_time);
+  Pcf85363Release();
+}
+
+static const uint8_t kPcf85363Aux[3] = { 0x7D, 0x7E, 0x7F };       // Last three RAM bytes
+
+bool Pcf85363AuxWrite(uint32_t v) { return RtcAuxWriteRegs(kPcf85363Aux, v); }
+bool Pcf85363AuxRead(uint32_t* v) { return RtcAuxReadRegs(kPcf85363Aux, v); }
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 /*-------------------------------------------------------------------------------------------*\
  * Dump all registers
@@ -634,6 +870,17 @@ void Pcf85363Detected(void) {
       RtcChip.ReadTime = &Pcf85363ReadTime;
       RtcChip.SetTime = &Pcf85363SetTime;
       RtcChip.mem_size = 64;
+#ifdef USE_RTC_CHIP_HOLDOVER
+      RtcChip.SetTime = &Pcf85363SetTimeRestart;
+      RtcChip.SetTimeHeld = &Pcf85363SetTimeHeld;
+      RtcChip.ReleaseTime = &Pcf85363Release;
+      RtcChip.release_flip_us = 500000;          // As the PCF85063, corrected by the first placement
+      RtcChip.seconds_reg = 0x01;
+      RtcChip.AuxWrite = &Pcf85363AuxWrite;
+      RtcChip.AuxRead = &Pcf85363AuxRead;
+      RtcChip.drift_reg = 0x2C;                  // RAM_byte
+      RtcChip.mem_size = 61;                     // The last three RAM bytes hold the record
+#endif  // USE_RTC_CHIP_HOLDOVER
       RtcChip.MemRead = &Pcf8563MemRead;
       RtcChip.MemWrite = &Pcf8563MemWrite;
       break;
@@ -1007,8 +1254,20 @@ void RtcChipDetect(void) {
 
   if (Rtc.utc_time < START_VALID_TIME) {                          // Not sync with NTP/GPS (time not valid), so read time
     uint32_t time = RtcChip.ReadTime();                           // Read UTC TIME
+#ifdef USE_RTC_CHIP_HOLDOVER
+    if (RtcChip.stopped) {                                        // Power lost between stop and start
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s found stopped, time lost"), RtcChip.name);
+      time = 0;
+    }
+#endif  // USE_RTC_CHIP_HOLDOVER
     if (time > START_VALID_TIME) {
 #ifdef USE_NTP_SERVER
+#ifdef USE_RTC_CHIP_HOLDOVER
+      RtcAuxLoad(time);
+      RtcChipDriftLoad();
+      int32_t lag = RtcChipLagUs(time);
+      if (lag >= 1000000) { time += lag / 1000000; }
+#endif  // USE_RTC_CHIP_HOLDOVER
       RtcSync(RtcChip.name, time, RTC_STRATUM_CHIP, RTC_PHASE_COLD, RTC_PHASE_SYNC_SECS);
 #else
       Rtc.utc_time = time;
@@ -1042,11 +1301,26 @@ void RtcChipSyncPhaseStart(void) {
 // Then use it, or start the fine catch
 void RtcChipSyncPhasePoll(void) {
   if (!RtcChip.ReadTime) { return; }
+#ifdef USE_RTC_CHIP_HOLDOVER
+  if (RtcChip.set_pending || RtcChip.release_pending) {
+    RtcChip.phase_time = 0;
+    return;
+  }
+#endif  // USE_RTC_CHIP_HOLDOVER
   if (!RtcChip.phase_time) {                                      // Idle, check needed?
     bool unheld = (RTC_STRATUM_NONE == Rtc.stratum);
     bool cold = (RTC_PHASE_COLD == Rtc.phase_source);
+#ifdef USE_RTC_CHIP_HOLDOVER
+    bool unplaced = RtcPhasePlaceable() && !RtcChipPlacedKnown() &&
+                    ((TasmotaGlobal.uptime - RtcChip.phase_audit) >= 60);
+    bool audit = (Rtc.stratum < RTC_STRATUM_CHIP) &&
+                 ((0 == RtcChip.phase_audit) || unplaced ||
+                  ((TasmotaGlobal.uptime - RtcChip.phase_audit) >= RTC_PHASE_SYNC_SECS));
+    bool place = RtcChipPlaceDue();
+#else
     bool audit = false;
     bool place = false;
+#endif  // USE_RTC_CHIP_HOLDOVER
     bool stale = ((TasmotaGlobal.uptime - Rtc.last_sync) >= RTC_PHASE_SYNC_SECS) &&
                  ((TasmotaGlobal.uptime - RtcChip.phase_audit) >= RTC_PHASE_SYNC_SECS);
     bool want = (unheld || cold || audit || place || stale);
@@ -1085,17 +1359,557 @@ void RtcChipSyncPhasePoll(void) {
     }
     return;
   }
+#ifdef USE_RTC_CHIP_HOLDOVER
+  bool fine = (0 != RtcChip.seconds_reg);
+  if (fine) { RtcFineStart(false); }
+  if (!fine && (Rtc.stratum < RTC_STRATUM_CHIP) && (RtcPhaseGood() || RtcPhaseNetwork())) {
+    int32_t chip_ms = (int32_t)(elapsed / 1000);                  // ms since the chip second started
+    int32_t ours_ms = (int32_t)RtcMillis();                       // ms since our second started
+    int32_t skew = ours_ms - chip_ms;
+    if (skew >  500) { skew -= 1000; }
+    if (skew < -500) { skew += 1000; }
+    int32_t limit = RtcChip.phase_limit ? RtcChip.phase_limit : RTC_CHIP_PHASE_MAX_MS;
+    bool reseat = (abs(skew) > limit);
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s phase skew %d ms (ours %d, chip %d, limit %d)%s"),
+      RtcChip.name, skew, ours_ms, chip_ms, limit, reseat ? PSTR(", re-seating") : PSTR(""));
+    if (reseat) {
+      RtcChipArmWrite();
+      if (!RtcPhaseGood()) { RtcChip.net_reseat = true; }
+    }
+    RtcChip.phase_limit = 0;      // Default for the next check
+  }
+#endif  // USE_RTC_CHIP_HOLDOVER
   if ((Rtc.stratum >= RTC_STRATUM_CHIP) && RtcChipCrystalCarries()) {
     RtcChip.phase_tries = 0;
     return;
   }
   uint32_t b_ms, b_us;
+#ifdef USE_RTC_CHIP_HOLDOVER
+  if (!RtcChipFlipSecond(after - elapsed, &time, &b_ms, &b_us)) {   // The caught step beats this read
+    b_ms = after_ms - (elapsed / 1000);
+    b_us = after - elapsed;
+    RtcChipCorrect(&time, &b_us, &b_ms);                         // Correct by the chip rate
+  }
+#else
   b_ms = after_ms - (elapsed / 1000);
   b_us = after - elapsed;
+#endif  // USE_RTC_CHIP_HOLDOVER
+#ifdef USE_RTC_CHIP_HOLDOVER
+  if (!RtcChip.stopped &&
+      RtcSetBoundary(time, b_ms, b_us, RTC_STRATUM_CHIP, RTC_PHASE_SYNC_SECS, RTC_PHASE_REGISTER, false)) {
+    RTC_PAIR_LOCK();
+    Rtc.chip_holdover_us = RtcChipHoldover(time, elapsed);       // Error = read gap
+    RTC_PAIR_UNLOCK();
+    RtcChip.phase_coarse = true;
+  }
+#else
   RtcSetBoundary(time, b_ms, b_us, RTC_STRATUM_CHIP, RTC_PHASE_SYNC_SECS, RTC_PHASE_REGISTER, false);
+#endif  // USE_RTC_CHIP_HOLDOVER
   RtcChip.phase_tries = 0;
   AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s phase synced, %u us in"), RtcChip.name, elapsed);
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+/*********************************************************************************************\
+ * RTC chip rate correction. The chip rate and the time it was last set are kept in its unused
+ * alarm registers (layout in RtcClock.h), not in flash. The time wraps after 6 days
+\*********************************************************************************************/
+#define RTC_AUX_RATE_SPAN_S  300            // Min span to measure the chip rate against PPS, s
+#define RTC_AUX_RATE_NET_SPAN_S 3000        // Min span against upstream NTP, s
+#define RTC_AUX_LAG_MAX_US   30000000       // Max correction, us
+
+struct {
+  uint32_t placed_utc;             // UTC when the chip was last set, multiple of 128
+  int32_t slow_ppb;                // Positive = chip runs slow, 0 = unknown
+  bool placed_known;               // Set with a good phase
+  bool trusted;                    // placed_utc is valid (no wrap)
+  bool far;                        // Set from an internet NTP server
+} RtcChipCorr;
+
+void RtcAuxStore(void) {
+  if (!RtcChip.AuxWrite) { return; }
+  int32_t rate;
+  uint32_t value = RtcAuxPack(RtcChipCorr.placed_known, RtcChipCorr.placed_utc, RtcChipCorr.slow_ppb,
+                              RtcChipCorr.far, &rate);
+  if (!RtcChipCorr.placed_known && !rate) {
+    RtcChip.AuxWrite(value);
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s spare bits voided, placement unknown"), RtcChip.name);
+    return;
+  }
+  bool ok = RtcChip.AuxWrite(value);
+  uint32_t back = 0;
+  bool kept = ok && RtcChip.AuxRead && RtcChip.AuxRead(&back) && (back == value);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s spare bits %s, placed %u, %d ppb slow (wrote %08X read %08X)"),
+    RtcChip.name, kept ? PSTR("kept") : PSTR("NOT kept"), RtcChipCorr.placed_utc,
+    rate * RTC_AUX_RATE_PPB, value, back);
+}
+
+void RtcAuxLoad(uint32_t now) {
+  uint32_t v;
+  if (!RtcChip.AuxRead || !RtcChip.AuxRead(&v)) { return; }
+  uint8_t got = RtcAuxUnpack(v, now, &RtcChipCorr.placed_utc, &RtcChipCorr.slow_ppb, &RtcChipCorr.far);
+  if (RTC_AUX_FOREIGN == got) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s spare bits not ours (%06X)"), RtcChip.name, v);
+    return;
+  }
+  if (RTC_AUX_RATE_ONLY == got) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s runs %d ppb slow, placement unknown"), RtcChip.name,
+      RtcChipCorr.slow_ppb);
+    return;
+  }
+  RtcChipCorr.placed_known = true;
+  // The time field wraps after 6 days: valid only if the settings were saved less than 4 days ago
+  RtcChipCorr.trusted = (Settings->cfg_timestamp > START_VALID_TIME) &&
+                        ((uint32_t)(now - Settings->cfg_timestamp) < RTC_HOLDOVER_TRUST_S);
+  AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s placed %u s ago%s, runs %d ppb slow: %d ms behind by now"),
+    RtcChip.name, now - RtcChipCorr.placed_utc, RtcChipCorr.far ? PSTR(" via internet") : PSTR(""), RtcChipCorr.slow_ppb,
+    (int32_t)(((int64_t)RtcChipCorr.slow_ppb * (now - RtcChipCorr.placed_utc)) / 1000000));
+}
+
+// ESP drift register usable? The BM8563 timer register only while the timer is off (TE and TIE clear)
+bool RtcChipDriftReg(void) {
+  if (!RtcChip.drift_reg) { return false; }
+  if (0x0F != RtcChip.drift_reg) { return true; }
+  uint8_t tc, c2;
+  return I2cValidRead8(&tc, RtcChip.address, 0x0E, RtcChip.bus) && !(tc & 0x80) &&
+         I2cValidRead8(&c2, RtcChip.address, 0x01, RtcChip.bus) && !(c2 & 0x01);
+}
+
+void RtcChipDriftStore(int32_t ppb) {
+  static uint8_t written = 0;
+  uint8_t b = RtcDriftToByte(ppb);
+  if ((b == written) || !RtcChipDriftReg()) { return; }
+  if (I2cWrite8(RtcChip.address, RtcChip.drift_reg, b, RtcChip.bus)) { written = b; }
+}
+
+// After a power loss: the ESP drift from the chip, only together with our record
+void RtcChipDriftLoad(void) {
+  uint8_t b;
+  if (Rtc.drift_ppb || !(RtcChipCorr.placed_known || RtcChipCorr.slow_ppb) || !RtcChipDriftReg() ||
+      !I2cValidRead8(&b, RtcChip.address, RtcChip.drift_reg, RtcChip.bus)) { return; }
+  Rtc.drift_ppb = RtcDriftFromByte(b);
+  if (!Rtc.drift_ppb) { return; }
+  Rtc.drift_source = RTC_DRIFT_SRC_NTP;     // Replaced by the next measured figure
+  Rtc.drift_span = 0;
+  AddLog(LOG_LEVEL_INFO, PSTR("RTC: drift %d ppb from %s"), Rtc.drift_ppb, RtcChip.name);
+}
+
+int32_t RtcChipLagUs(uint32_t utc) {
+  if (!RtcChipCorr.placed_known || !RtcChipCorr.slow_ppb) { return 0; }
+  int32_t since = (int32_t)(utc - RtcChipCorr.placed_utc);
+  if (since < 0) { return 0; }
+  int64_t lag = ((int64_t)RtcChipCorr.slow_ppb * since) / 1000;
+  if ((lag > RTC_AUX_LAG_MAX_US) || (lag < -RTC_AUX_LAG_MAX_US)) { return 0; }
+  return (int32_t)lag;
+}
+
+// Correct a chip reading by the chip rate since it was set
+void RtcChipCorrect(uint32_t* utc, uint32_t* b_us, uint32_t* b_ms) {
+  int32_t lag = RtcChipLagUs(*utc);
+  if (!lag) { return; }
+  int32_t n = (lag >= 0) ? (lag / 1000000) : -((999999 - lag) / 1000000);
+  int32_t f = lag - (n * 1000000);
+  *utc += n;
+  *b_us -= f;
+  *b_ms -= f / 1000;
+  if ((uint32_t)(millis() - *b_ms) >= 1000) {                     // Next second
+    *utc += 1;
+    *b_us += 1000000;
+    *b_ms += 1000;
+  }
+}
+
+// Chip error after a power loss, us, 0 = unknown (1 s)
+uint32_t RtcChipHoldover(uint32_t utc, uint32_t catch_us) {
+  if (!RtcChipCorr.placed_known || !RtcChipCorr.trusted || !RtcChipCorr.slow_ppb) { return 0; }
+  int32_t age = (int32_t)(utc - RtcChipCorr.placed_utc);
+  return (age >= 0) ? RtcChipHoldoverUs((uint32_t)age, catch_us, RtcChipCorr.far) : 0;
+}
+
+/*********************************************************************************************\
+ * GPS without PPS: the message gives the second, the chip step set by PPS gives its start
+\*********************************************************************************************/
+#define RTC_CHIP_PLACE_MAX_US     250000    // Max error, else use the message timing
+#define RTC_CHIP_MSG_GUARD_US     10000     // Min distance of a message from a chip step, plus the error
+#define RTC_CHIP_PLACE_KEEP_S     900       // Max age of the chip step, s
+
+struct {
+  uint32_t flip_us;                // micros() of the chip step, rate corrected
+  uint32_t flip_ms;                // millis() of the chip step
+  uint32_t utc;                    // UTC of that second
+  uint32_t taken;                  // Uptime of the catch
+  bool valid;
+  bool told;                       // Logged
+} RtcChipFlip;
+
+// Caught chip step young enough to place a second
+bool RtcChipFlipFresh(void) {
+  return RtcChipFlip.valid && ((TasmotaGlobal.uptime - RtcChipFlip.taken) <= RTC_CHIP_PLACE_KEEP_S);
+}
+
+// Second at micros() at_us from the caught chip step: its label and start. false = no fresh step
+bool RtcChipFlipSecond(uint32_t at_us, uint32_t* utc, uint32_t* b_ms, uint32_t* b_us) {
+  if (!RtcChipFlipFresh()) { return false; }
+  int32_t off;
+  *utc = RtcChipFlip.utc + RtcNearestSecond((int32_t)(at_us - RtcChipFlip.flip_us), Rtc.drift_ppb, &off);
+  *b_us = at_us - (uint32_t)off;
+  *b_ms = RtcChipFlip.flip_ms + (uint32_t)((int32_t)(*b_us - RtcChipFlip.flip_us) / 1000);
+  return true;
+}
+
+bool RtcChipPlacedKnown(void) {
+  return RtcChipCorr.placed_known;
+}
+
+bool RtcChipPlaceDue(void) {
+  if (!RtcChip.seconds_reg || !RtcChipCorr.placed_known || !RtcChipCorr.slow_ppb) { return false; }
+  if ((Rtc.stratum >= RTC_STRATUM_CHIP) || RtcPhaseGood()) { return false; }
+  if (RtcPhaseNetwork()) { return false; }      // Not with upstream NTP
+  uint32_t every = Rtc.drift_ppb ? 300 : 60;   // s
+  return !RtcChipFlip.valid || ((TasmotaGlobal.uptime - RtcChipFlip.taken) >= every);
+}
+
+// Start of GPS second `named` from the chip step: the message names the chip second it arrived in.
+// false = use the arrival
+bool RtcChipPlaceSecond(uint32_t named, uint32_t arrival_us, uint32_t* b_ms, uint32_t* b_us, uint32_t* err_us) {
+  bool ok = false;
+  do {
+    if (!RtcChipFlipFresh() || RtcChip.set_pending || RtcChip.release_pending) { break; }
+    uint32_t since_catch = TasmotaGlobal.uptime - RtcChipFlip.taken;
+    uint32_t chip_us = RtcChipHoldover(named, RTC_HOLDOVER_CATCH_US);   // Same bound as after a power loss
+    if (!chip_us) { break; }
+    int32_t ppb = Rtc.drift_ppb;
+    uint64_t err = chip_us + ((uint64_t)since_catch * (ppb ? RTC_DRIFT_RESIDUAL_PPB : NTP_DRIFT_UNKNOWN_PPB)) / 1000;
+    if (err > RTC_CHIP_PLACE_MAX_US) { break; }
+    uint32_t bu;
+    uint32_t label = RtcSecondOfArrival(arrival_us, RtcChipFlip.flip_us, RtcChipFlip.utc, ppb,
+                                        (uint32_t)err + RTC_CHIP_MSG_GUARD_US, &bu);
+    if (label != named) {
+      AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("RTC: %s second %u, message names %u: not used"), RtcChip.name, label, named);
+      break;
+    }
+    *b_us = bu;
+    *b_ms = RtcChipFlip.flip_ms + (uint32_t)((int32_t)(bu - RtcChipFlip.flip_us) / 1000);
+    *err_us = (uint32_t)err;
+    ok = true;
+  } while (0);
+  if (ok != RtcChipFlip.told) {
+    if (ok) {
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s flip places the GPS-named second, bound %u us"),
+        RtcChip.name, *err_us);
+    } else {
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s flip no longer places the GPS-named second"), RtcChip.name);
+    }
+    RtcChipFlip.told = ok;
+  }
+  return ok;
+}
+
+/*********************************************************************************************\
+ * Fine catch: chip second step to about 50 us (sequential equivalent-time sampling). A scan finds
+ * the step, then ten bursts of reads around the expected step, one per second, each shifted by a
+ * tenth of a read. A line through them gives the step time and the chip rate
+\*********************************************************************************************/
+#define RTC_FINE_BURSTS        10
+#define RTC_FINE_SCAN_MAX_MS   1500         // Max scan time, ms
+#define RTC_FINE_SCAN_WIDE_US  25000        // Max scan read gap, us
+#define RTC_FINE_HALF_US       1200         // Half burst window, us
+#define RTC_FINE_ENTER_US      20000
+#define RTC_FINE_TRIES         10           // Max retries
+#define RTC_FINE_RESEAT_US     1000
+
+#ifndef RTC_RELEASE_LEAD_US
+#define RTC_RELEASE_LEAD_US    1100
+#endif
+#define RTC_RELEASE_LEAD_MAX   5000         // Max lead correction, us
+int32_t rtc_release_lead_us = RTC_RELEASE_LEAD_US;
+int32_t rtc_release_fired_us = 0;           // us the last start was off the second
+
+enum { RTC_FINE_IDLE = 0, RTC_FINE_SCAN, RTC_FINE_BURST };
+
+struct {
+  uint8_t state;
+  uint8_t n;                       // Bursts done
+  uint8_t tries;
+  uint8_t last_sec;                // Seconds register after the last step
+  bool have_last;
+  bool placement;                  // Catch after setting the chip
+  uint32_t last_at;                // micros() of the last read of last_sec
+  uint32_t base_us;                // micros() of the scan step
+  uint32_t half_us;
+  uint32_t started_ms;
+  uint32_t read_us;                // Slowest read, us
+  int32_t mid[RTC_FINE_BURSTS];    // Step time - (base_us + k * 1e6), us
+  uint8_t k[RTC_FINE_BURSTS];      // Seconds after base_us
+  int32_t prev_skew_us;
+  uint32_t prev_skew_uptime;
+  bool prev_skew_valid;
+  bool prev_skew_edge;             // Measured against PPS
+} RtcFine;
+
+void RtcFineStart(bool placement) {
+  if (!RtcChip.seconds_reg || (RTC_FINE_IDLE != RtcFine.state)) { return; }
+  RtcFine.state = RTC_FINE_SCAN;
+  RtcFine.n = 0;
+  RtcFine.tries = 0;
+  RtcFine.have_last = false;
+  RtcFine.placement = placement;
+  RtcFine.read_us = 0;
+  RtcFine.started_ms = millis();
+}
+
+static uint32_t RtcFineHalfFloor(void) {
+  uint32_t two_reads = (2 * RtcFine.read_us) + 300;
+  return (two_reads > RTC_FINE_HALF_US) ? two_reads : RTC_FINE_HALF_US;
+}
+
+static void RtcFineAbort(const char* why) {
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s fine catch abandoned, %s"), RtcChip.name, why);
+  RtcFine.state = RTC_FINE_IDLE;
+}
+
+static bool RtcFineRead(uint8_t* sec, uint32_t* at) {
+  uint32_t before = micros();
+  uint8_t s = RtcChipReadSeconds();
+  uint32_t took = micros() - before;
+  if (0xFF == s) { return false; }
+  if (took > RtcFine.read_us) { RtcFine.read_us = took; }
+  *sec = s;
+  *at = before + (took / 2);
+  return true;
+}
+
+static int64_t RtcDivRound(int64_t a, int64_t b) { return ((a >= 0) ? (a + b / 2) : (a - b / 2)) / b; }
+
+// Line fit through (k, mid): value at k in us, slope in ns/s
+static int32_t RtcFineLine(uint32_t k, int32_t* slope_ns) {
+  int64_t n = RtcFine.n, sk = 0, sm = 0, skk = 0, skm = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    int64_t x = RtcFine.k[i], y = RtcFine.mid[i];
+    sk += x; sm += y; skk += x * x; skm += x * y;
+  }
+  int64_t d = n * skk - sk * sk;
+  int64_t q = (d > 0) ? (n * skm - sk * sm) : 0;
+  if (d <= 0) { d = 1; }
+  if (slope_ns) { *slope_ns = (int32_t)RtcDivRound(q * 1000, d); }
+  return n ? (int32_t)RtcDivRound(sm * d + q * (n * (int64_t)k - sk), n * d) : 0;
+}
+
+static int32_t RtcFineSkew(uint32_t flip) { int32_t off; RtcSecondAt(flip, &off); return off; }
+
+// Skew taken as the one nearest the rate prediction: a lag beyond 0.5 s wraps the raw skew
+static int32_t RtcFineSkewNear(uint32_t flip, int32_t predicted) {
+  int32_t d = RtcFineSkew(flip) - predicted;
+  d -= 1000000 * ((d + ((d >= 0) ? 500000 : -500000)) / 1000000);
+  return predicted + d;
+}
+
+static void RtcFineFinish(void) {
+  RtcFine.state = RTC_FINE_IDLE;
+  uint32_t k_last = RtcFine.k[RtcFine.n - 1];
+  int32_t slope_ns;
+  uint32_t flip = RtcFine.base_us + (k_last * 1000000) + RtcFineLine(k_last, &slope_ns);
+  uint32_t chip_utc = RtcChip.ReadTime();
+  if (HighestLogLevel() >= LOG_LEVEL_DEBUG) {                     // Scatter of the bursts around the line
+    uint64_t ss = 0;
+    for (uint32_t i = 0; i < RtcFine.n; i++) {
+      int64_t r = RtcFine.mid[i] - RtcFineLine(RtcFine.k[i], nullptr);
+      ss += r * r;
+    }
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s flip caught, sd %u us over %u s, read %u us, chip %d ppb%s"),
+      RtcChip.name, (uint32_t)sqrtf((float)ss / (RtcFine.n - 2)), k_last, RtcFine.read_us, Rtc.drift_ppb - slope_ns,
+      Rtc.drift_ppb ? PSTR("") : PSTR(" (ESP drift unmeasured)"));
+  }
+
+  {
+    uint32_t c_utc = chip_utc, c_us = flip;
+    uint32_t c_ms = millis() - ((micros() - flip) / 1000);
+    RtcChipCorrect(&c_utc, &c_us, &c_ms);
+    RtcChipFlip.flip_us = c_us;
+    RtcChipFlip.flip_ms = c_ms;
+    RtcChipFlip.utc = c_utc;
+    RtcChipFlip.taken = TasmotaGlobal.uptime;
+    RtcChipFlip.valid = true;
+  }
+
+  if ((Rtc.stratum < RTC_STRATUM_CHIP) && !RtcPhasePlaceable()) {
+    RtcFine.prev_skew_valid = false;                 // No time source
+    RtcChip.phase_limit = 0;
+    int32_t off_us;
+    uint32_t ours = RtcSecondAt(RtcChipFlip.flip_us, &off_us);
+    if (RtcPhaseNetwork()) {
+      int32_t predicted = RtcChipLagUs(chip_utc);
+      int32_t skew = RtcFineSkewNear(flip, predicted);
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s skew %d us against upstream (correction predicted %d us)"),
+        RtcChip.name, skew, predicted);
+      if ((ours != RtcChipFlip.utc) && (abs(off_us) < 350000)) {
+        RtcChipArmSecondsFix();
+      } else if (abs(skew - predicted) > RTC_HOLDOVER_PLACE_FAR_US) {
+        RtcChipArmWrite();
+        RtcChip.net_reseat = true;
+        AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s re-seating, skew beyond %d us of upstream"), RtcChip.name,
+          RTC_HOLDOVER_PLACE_FAR_US);
+      }
+    }
+    return;
+  }
+  if (Rtc.stratum < RTC_STRATUM_CHIP) {
+    bool edge = RtcPhaseGood();                      // PPS, else upstream NTP
+    int8_t place = RtcPhasePlaceClass();
+    int32_t skew = RtcFineSkewNear(flip, RtcChipLagUs(chip_utc));
+    int32_t off_us;
+    uint32_t ours = RtcSecondAt(RtcChipFlip.flip_us, &off_us);
+    if ((ours != RtcChipFlip.utc) && (abs(off_us) < 350000) && !RtcFine.placement) {
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s %d s off our clock, re-seating it"), RtcChip.name,
+        (int32_t)(RtcChipFlip.utc - ours));
+      RtcChipArmSecondsFix();
+    }
+    if (RtcFine.placement && (abs(abs(skew) - 500000) < 100000)) {    // First step 0.5 s or 1 s after the start
+      RtcChip.release_flip_us = 1500000 - RtcChip.release_flip_us;
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s steps %u ms after the start, setting it again"), RtcChip.name,
+        RtcChip.release_flip_us / 1000);
+      RtcChipArmWrite();
+      return;
+    }
+    if (RtcFine.placement) {
+      int32_t response = skew - rtc_release_fired_us;
+      bool learn = edge && (response >= 0) && (response <= RTC_RELEASE_LEAD_MAX);
+      int32_t lead = learn ? ((rtc_release_lead_us + response) / 2) : rtc_release_lead_us;
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s placed %d us off our boundary (fired %d us, response %d us), lead %d -> %d us"),
+        RtcChip.name, skew, rtc_release_fired_us, response, rtc_release_lead_us, lead);
+      rtc_release_lead_us = lead;
+    } else if (RtcFine.prev_skew_valid && (RtcFine.prev_skew_edge == edge) &&
+               (TasmotaGlobal.uptime > RtcFine.prev_skew_uptime)) {
+      uint32_t span = TasmotaGlobal.uptime - RtcFine.prev_skew_uptime;
+      int32_t rate = (int32_t)(((int64_t)(skew - RtcFine.prev_skew_us) * 1000) / span);
+      int32_t predicted = RtcChipLagUs(chip_utc);
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s skew %d us (correction predicted %d us), chip runs %d ppb slow over %u s"),
+        RtcChip.name, skew, predicted, rate, span);
+      if (span >= (edge ? RTC_AUX_RATE_SPAN_S : RTC_AUX_RATE_NET_SPAN_S)) {
+        RtcChipCorr.slow_ppb = rate;
+        RtcAuxStore();
+      }
+    } else {
+      AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s skew %d us (correction predicted %d us)"),
+        RtcChip.name, skew, RtcChipLagUs(chip_utc));
+    }
+    RtcFine.prev_skew_us = skew;
+    RtcFine.prev_skew_uptime = TasmotaGlobal.uptime;
+    RtcFine.prev_skew_valid = true;
+    RtcFine.prev_skew_edge = edge;
+    int32_t limit_us = RtcChip.phase_limit ? (RtcChip.phase_limit * 1000) :
+                       edge ? RTC_FINE_RESEAT_US : (place ? RTC_HOLDOVER_PLACE_FAR_US : RTC_HOLDOVER_PLACE_US);
+    if (!RtcFine.placement) {
+      RtcChip.phase_limit = 0;
+      int32_t age = (int32_t)(chip_utc - RtcChipCorr.placed_utc);
+      int32_t off = skew - RtcChipLagUs(chip_utc);                // Off its prediction
+      if (abs(off) > limit_us) {
+        RtcChipArmWrite();
+        AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s re-seating, %d us off its prediction, beyond %d us"), RtcChip.name,
+          off, limit_us);
+      } else if (!RtcChipCorr.placed_known) {
+        RtcChipArmWrite();
+        AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s re-seating, placement unknown"), RtcChip.name);
+      } else if (age >= RTC_HOLDOVER_REPLACE_S) {
+        RtcChipArmWrite();
+        AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s re-seating, placed %d s ago"), RtcChip.name, age);
+      }
+    }
+    return;
+  }
+  if (RtcChipCrystalCarries() && !RtcChip.phase_coarse) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s %d us from our clock, which keeps the crystal"),
+      RtcChip.name, RtcFineSkew(flip));
+    return;
+  }
+  if (RtcChip.stopped) { return; }                                 // Time lost, never a source
+  uint32_t now_us = micros();
+  uint32_t now_ms = millis();
+  uint32_t b_ms = now_ms - ((now_us - flip) / 1000);
+  RtcChipCorrect(&chip_utc, &flip, &b_ms);                         // Correct by the chip rate
+  bool taken = RtcSetBoundary(chip_utc, b_ms, flip, RTC_STRATUM_CHIP, RTC_PHASE_SYNC_SECS,
+                              RTC_PHASE_REGISTER, false);
+  if (taken) {
+    RTC_PAIR_LOCK();
+    Rtc.chip_holdover_us = RtcChipHoldover(chip_utc, RTC_HOLDOVER_CATCH_US);
+    RTC_PAIR_UNLOCK();
+    RtcChip.phase_coarse = false;
+  }
+  AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s phase from fine catch %s"), RtcChip.name,
+    taken ? PSTR("taken") : PSTR("refused"));
+}
+
+// Fine catch, every loop. Waits at most RTC_FINE_ENTER_US plus the window
+void RtcFineLoop(void) {
+  if (RTC_FINE_IDLE == RtcFine.state) { return; }
+  if (RtcChip.set_pending || RtcChip.release_pending) { RtcFineAbort(PSTR("write pending")); return; }
+
+  if (RTC_FINE_SCAN == RtcFine.state) {
+    uint8_t s;
+    uint32_t at;
+    if (!RtcFineRead(&s, &at)) { RtcFineAbort(PSTR("read failed")); return; }
+    if (!RtcFine.have_last || (s == RtcFine.last_sec)) {
+      if (!RtcFine.have_last) { RtcFine.last_sec = s; RtcFine.have_last = true; }
+      RtcFine.last_at = at;
+      if ((millis() - RtcFine.started_ms) > RTC_FINE_SCAN_MAX_MS) { RtcFineAbort(PSTR("no step")); }
+      return;
+    }
+    uint32_t width = at - RtcFine.last_at;
+    RtcFine.last_sec = s;
+    if (width > RTC_FINE_SCAN_WIDE_US) {                          // Loop too slow
+      if (++RtcFine.tries > RTC_FINE_TRIES) { RtcFineAbort(PSTR("loop too slow")); return; }
+      RtcFine.last_at = at;
+      RtcFine.started_ms = millis();
+      return;
+    }
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s scan bracket %u us, read %u us"), RtcChip.name, width, RtcFine.read_us);
+    RtcFine.base_us = RtcFine.last_at + (width / 2);
+    RtcFine.half_us = (width / 2) + RtcFineHalfFloor();
+    RtcFine.n = 0;
+    RtcFine.tries = 0;
+    RtcFine.state = RTC_FINE_BURST;
+    return;
+  }
+
+  uint32_t k = (RtcFine.n ? RtcFine.k[RtcFine.n - 1] : 0) + 1;
+  uint32_t pred;
+  int32_t to_go;
+  do {                                                            // Next burst
+    pred = RtcFine.base_us + (k * 1000000) + RtcFineLine(k, nullptr);
+    to_go = (int32_t)(pred - micros());
+    if (to_go >= (int32_t)RtcFine.half_us) { break; }
+    k++;
+  } while (k < 250);
+  if (k >= 250) { RtcFineAbort(PSTR("lost the flip")); return; }
+  if (to_go > (int32_t)(RtcFine.half_us + RTC_FINE_ENTER_US)) { return; }
+
+  uint32_t start = pred - RtcFine.half_us + ((RtcFine.read_us * RtcFine.n) / RTC_FINE_BURSTS)
+                 - (RtcFine.read_us / 2);
+  while ((int32_t)(micros() - start) < 0) { }
+  uint32_t window = 2 * RtcFine.half_us;
+  uint8_t s0, s;
+  uint32_t at0, at;
+  if (!RtcFineRead(&s0, &at0)) { RtcFineAbort(PSTR("read failed")); return; }
+  bool stepped = false;
+  while ((int32_t)(micros() - start) < (int32_t)window) {
+    if (!RtcFineRead(&s, &at)) { RtcFineAbort(PSTR("read failed")); return; }
+    if (s != s0) { stepped = true; break; }
+    at0 = at;
+  }
+  if (!stepped) {
+    if (++RtcFine.tries > RTC_FINE_TRIES) { RtcFineAbort(PSTR("bursts keep missing")); return; }
+    RtcFine.half_us = (RtcFine.half_us < RTC_FINE_SCAN_WIDE_US / 2) ? (2 * RtcFine.half_us) : RTC_FINE_SCAN_WIDE_US;
+    return;
+  }
+  uint32_t mid = at0 + ((at - at0) / 2);
+  RtcFine.mid[RtcFine.n] = (int32_t)(mid - (RtcFine.base_us + (k * 1000000)));
+  RtcFine.k[RtcFine.n] = k;
+  RtcFine.n++;
+  RtcFine.last_sec = s;
+  if (RtcFine.n >= 2) { RtcFine.half_us = RtcFineHalfFloor(); }
+  if (RtcFine.n >= RTC_FINE_BURSTS) { RtcFineFinish(); }
+}
+
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 // While powered, the drift corrected ESP crystal is better than the chip
 bool RtcChipCrystalCarries(void) {
@@ -1103,19 +1917,140 @@ bool RtcChipCrystalCarries(void) {
          (RTC_PHASE_COLD != Rtc.phase_source);
 }
 
+#ifdef USE_RTC_CHIP_HOLDOVER
+
+// Request setting the chip, keep the current stratum
+void RtcChipArmWrite(void) {
+  if (!RtcChip.set_pending || (Rtc.stratum < RtcChip.armed_stratum)) { RtcChip.armed_stratum = Rtc.stratum; }
+  if (!RtcChip.set_pending) { RtcChip.fix_seconds = false; }
+  RtcChip.set_pending = true;
+}
+
+void RtcChipArmSecondsFix(void) {
+  RtcChipArmWrite();
+  RtcChip.fix_seconds = true;
+}
+
+void RtcChipTakeOverTime(void) {
+  if (!RtcChip.SetTime) { return; }                               // No chip
+  if (Rtc.stratum >= RTC_STRATUM_CHIP) { return; }                // Time from the chip
+  if (Rtc.utc_time <= START_VALID_TIME) { return; }
+  if (!RtcPhasePlaceable()) { return; }
+  RtcChipArmWrite();
+  AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s takes over, re-seating it (utc=%u phase=%u ms)"),
+    RtcChip.name, Rtc.utc_time, RtcMillis());
+}
+
+#define RTC_RELEASE_SPIN_US    30000
+#define RTC_RELEASE_GIVEUP_MS  5000
+
+// Every loop: start the stopped chip at the next second
+void RtcChipReleasePoll(void) {
+  if (!RtcChip.release_pending || !RtcChip.ReleaseTime) { return; }
+
+  RTC_PAIR_LOCK();
+  uint32_t b_us = Rtc.boundary_micros;
+  uint32_t utc = Rtc.utc_time;
+  int32_t ppb = Rtc.drift_ppb;
+  RTC_PAIR_UNLOCK();
+  uint32_t now = micros();
+  uint32_t shift = 1000000 - RtcChip.release_flip_us;              // PCF85063 steps 0.5 s after the start
+  int32_t off;
+  int32_t secs = RtcNearestSecond((int32_t)(now - shift - b_us), ppb, &off);
+  if (off >= 0) { secs++; }
+  uint32_t next = b_us + (uint32_t)RtcSecondsUs(secs, ppb);
+  uint32_t next_utc = utc + secs;                                  // Second starting at `next`
+  bool overdue = ((int32_t)(millis() - RtcChip.release_armed_ms) > RTC_RELEASE_GIVEUP_MS);
+  if (!overdue && ((int32_t)(next + shift - now) > RTC_RELEASE_SPIN_US)) { return; }
+
+  if (!overdue && (next_utc != RtcChip.release_utc)) {
+    if (RtcChip.release_reloads < RTC_RELEASE_MAX_RELOADS) {
+      AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s release missed its second (%u, next %u), reloading"),
+        RtcChip.name, RtcChip.release_utc, next_utc);
+      RtcChip.release_reloads++;
+      RtcChip.SetTimeHeld(next_utc);
+      RtcChip.release_utc = next_utc;
+      return;
+    }
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s released %d s off, out of reloads"),
+      RtcChip.name, (int32_t)(RtcChip.release_utc - next_utc));
+  }
+
+  uint32_t aim = next + shift - rtc_release_lead_us;
+  while (!overdue && ((int32_t)(micros() - aim) < 0)) { }
+  uint32_t before = micros();
+  RtcChip.ReleaseTime();
+  uint32_t took = micros() - before;
+  rtc_release_fired_us = (int32_t)(before - (next + shift));
+  RtcChip.release_pending = false;
+  RtcChipCorr.placed_known = (!RtcChip.AuxWrite || (0 == (RtcChip.release_utc % RTC_AUX_UNIT_S))) &&
+                             !overdue && RtcPhasePlaceable();   // Record chips are set on the 128 s grid
+  RtcChipCorr.trusted = RtcChipCorr.placed_known;
+  RtcChipCorr.far = (1 == RtcPhasePlaceClass());
+  RtcChipCorr.placed_utc = RtcChip.release_utc;
+  RtcAuxStore();
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s released %d us from the boundary, write %u us%s"),
+    RtcChip.name, rtc_release_fired_us, took, overdue ? PSTR(", overdue") : PSTR(""));
+  RtcFineStart(true);                                              // Check the result
+}
+
+// Set the chip on a multiple of 128 s (for the record)
+void RtcChipSetTimePoll(void) {
+  if (!RtcChip.set_pending || !RtcChip.SetTime) { return; }
+
+  uint32_t since = RtcMillis();
+  if (since >= 100) { return; }
+
+  uint32_t utc = RtcCarriedTime(nullptr);
+  // Second to write: the next one, or this one for the PCF85063
+  uint32_t load = utc + ((RtcChip.release_flip_us < 1000000) ? 0 : 1);
+  if (RtcChip.AuxWrite && (load % RTC_AUX_UNIT_S)) { return; }
+  if (RtcChip.AuxWrite && !((load / RTC_AUX_UNIT_S) & RTC_AUX_TIME_MASK)) { return; }
+
+  RtcChip.set_pending = false;
+  if (!RtcChip.fix_seconds && !RtcPhasePlaceable() && !RtcChip.net_reseat) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: %s re-seat dropped, no edge to place it from"), RtcChip.name);
+    return;
+  }
+  RtcChip.net_reseat = false;
+  RtcChipFlip.valid = false;
+  if (RtcChip.SetTimeHeld && RtcChip.ReleaseTime) {
+    RtcChip.SetTimeHeld(load);
+    RtcChip.release_utc = load;
+    RtcChip.release_reloads = 0;
+    RtcChip.release_pending = true;
+    RtcChip.release_armed_ms = millis();
+  } else {
+    RtcChip.SetTime(utc);
+  }
+  RtcChip.stopped = false;
+  RtcSettings.chip_writer_stratum = (RtcChip.armed_stratum < Rtc.stratum) ? RtcChip.armed_stratum : Rtc.stratum;
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s re-synced (" D_UTC_TIME ") %s +%d ms"),
+    RtcChip.name, GetDateAndTime(DT_UTC).c_str(), since);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: write chip<=%u (+%u carried) phase=%u ms stratum=%d"),
+    utc, (uint32_t)(utc - Rtc.utc_time), since, Rtc.stratum);
+}
+#endif  // USE_RTC_CHIP_HOLDOVER
 #endif  // USE_NTP_SERVER
 
 void RtcChipTimeSynced(void) {
 #ifdef USE_NTP_SERVER
   if ((Rtc.stratum >= RTC_STRATUM_CHIP) && (RTC_PHASE_MANUAL != Rtc.phase_source)) { return; }   // Time from the chip
 #endif  // USE_NTP_SERVER
+#ifdef USE_RTC_CHIP_HOLDOVER
+  if (RtcChip.set_pending) { return; }
+#endif  // USE_RTC_CHIP_HOLDOVER
   if ((Rtc.utc_time > START_VALID_TIME) &&                        // Valid UTC time
       (abs((int32_t)(Rtc.utc_time - RtcChip.ReadTime())) > 2)) {  // Time has drifted from RTC more than 2 seconds
+#ifdef USE_RTC_CHIP_HOLDOVER
+    RtcChipArmSecondsFix();                                       // Set at the next second, with the phase
+#else
     RtcChip.SetTime(Rtc.utc_time);                                // Update time
 #ifdef USE_NTP_SERVER
     RtcSettings.chip_writer_stratum = Rtc.stratum;
 #endif  // USE_NTP_SERVER
     AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s re-synced (" D_UTC_TIME ") %s"), RtcChip.name, GetDateAndTime(DT_UTC).c_str());
+#endif  // USE_RTC_CHIP_HOLDOVER
   }
 }
 
@@ -1147,10 +2082,16 @@ int32_t RtcChipMemWrite(uint8_t *buffer, uint32_t size) {
 
 const char kRtcChipCommands[] PROGMEM = "Rtc|"  // Prefix
   D_CMND_NTPSERVER
+#ifdef USE_RTC_CHIP_HOLDOVER
+  "|" D_CMND_RTCPHASE "|Catch"
+#endif  // USE_RTC_CHIP_HOLDOVER
   ;
 
 void (* const RtcChipCommand[])(void) PROGMEM = {
   &CmndRtcNtpServer,
+#ifdef USE_RTC_CHIP_HOLDOVER
+  &CmndRtcPhase, &CmndRtcCatch
+#endif  // USE_RTC_CHIP_HOLDOVER
   };
 
 NtpServer RtcChipTimeServer(PortUdp);
@@ -1189,6 +2130,37 @@ void RtcChipHandleNtp(void) {
   if (!RtcNtpRequest(RTC_NTP_OWNER_CHIP, &base, &utc, &boundary_us)) { RtcChipTimeServer.dropRequest(); return; }
   if (RtcChipTimeServer.processOneRequest(utc, boundary_us, base)) { RtcNtpSent(base); }
 }
+#ifdef USE_RTC_CHIP_HOLDOVER
+void CmndRtcPhase(void) {
+  if (!RtcChip.detected || (Rtc.stratum >= RTC_STRATUM_CHIP)) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: no %s, audit skipped"),
+      RtcChip.detected ? PSTR("clock better than the chip") : PSTR("chip"));
+    ResponseCmndNumber(-1);
+    return;
+  }
+  RtcChip.phase_limit = (XdrvMailbox.payload > 0) ? XdrvMailbox.payload : RTC_CHIP_PHASE_MAX_MS;
+  RtcChip.phase_audit = 0;                     // Check now
+  RtcChip.phase_time = 0;
+  AddLog(LOG_LEVEL_INFO, PSTR("RTC: phase audit armed, limit %d ms"), RtcChip.phase_limit);
+  ResponseCmndDone();
+}
+
+void CmndRtcCatch(void) {
+  if (!RtcChip.seconds_reg) { ResponseCmndChar_P(PSTR("Not supported")); return; }
+  if ((RTC_FINE_IDLE != RtcFine.state) || RtcChip.set_pending || RtcChip.release_pending) {
+    ResponseCmndChar_P(PSTR("Busy"));
+    return;
+  }
+  if (1 == XdrvMailbox.payload) {
+    if (Rtc.stratum >= RTC_STRATUM_CHIP) { ResponseCmndChar_P(PSTR("No better clock")); return; }
+    RtcChipArmWrite();
+    RtcChip.net_reseat = true;               // Set even without a good phase
+  } else {
+    RtcFineStart(false);
+  }
+  ResponseCmndDone();
+}
+#endif  // USE_RTC_CHIP_HOLDOVER
 
 void CmndRtcNtpServer(void) {
   if (!RtcChip.detected) {
@@ -1243,8 +2215,18 @@ bool Xdrv56(uint32_t function) {
       case FUNC_TIME_SYNCED:
         RtcChipTimeSynced();
         break;
+#ifdef USE_RTC_CHIP_HOLDOVER
+      case FUNC_LOOP:
+      case FUNC_SLEEP_LOOP:
+        RtcChipReleasePoll();
+        RtcFineLoop();
+        break;
+#endif  // USE_RTC_CHIP_HOLDOVER
 #ifdef USE_NTP_SERVER
       case FUNC_EVERY_100_MSECOND:
+#ifdef USE_RTC_CHIP_HOLDOVER
+        RtcChipSetTimePoll();
+#endif  // USE_RTC_CHIP_HOLDOVER
         RtcChipSyncPhasePoll();
         break;
 #endif  // USE_NTP_SERVER

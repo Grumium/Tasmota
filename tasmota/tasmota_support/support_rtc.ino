@@ -612,6 +612,9 @@ void RtcDriftSet(uint8_t source, int32_t ppb, bool moved, uint32_t span) {
 #ifdef ESP32
   RtcDriftKeepSave(ppb, source, span);                 // Keep across a restart
 #endif  // ESP32
+#ifdef USE_RTC_CHIP_HOLDOVER
+  RtcChipDriftStore(ppb);                              // Keep across a power loss
+#endif  // USE_RTC_CHIP_HOLDOVER
 }
 
 DriftEvent RtcDriftStep(const char* tag, uint8_t source, DriftEst* e, const DriftEstParams* p,
@@ -872,6 +875,9 @@ void RtcNtpTrackSource(void) {
   if ((Rtc.last_sync > 0) && RtcSourceStale(RtcHolderNow())) {
     AddLog(LOG_LEVEL_INFO, PSTR("RTC: source silent %u s, stratum %d -> %d"),
       TasmotaGlobal.uptime - Rtc.last_sync, Rtc.stratum, RTC_STRATUM_CHIP);
+#ifdef USE_RTC_CHIP_HOLDOVER
+    RtcChipTakeOverTime();
+#endif  // USE_RTC_CHIP_HOLDOVER
     RTC_PAIR_LOCK();
     RtcDropSource(RTC_STRATUM_CHIP);
 #ifdef USE_RTC_CHIPS
@@ -890,6 +896,11 @@ void RtcNtpTrackSource(void) {
     Rtc.from_upstream ? PSTR("upstream") :
     (RTC_NTP_OWNER_GPS == now) ? PSTR("GPS") : (RTC_NTP_OWNER_CHIP == now) ? PSTR("chip") : PSTR("nothing"),
     Rtc.stratum);
+#ifdef USE_RTC_CHIP_HOLDOVER
+  if ((RTC_NTP_OWNER_GPS == previous) && (RTC_NTP_OWNER_CHIP == now)) {
+    RtcChipTakeOverTime();
+  }
+#endif  // USE_RTC_CHIP_HOLDOVER
 }
 
 uint8_t RtcNtpDescribe(NtpTimeBase* base) {
@@ -932,6 +943,9 @@ void RtcReleaseSource(uint8_t stratum) {
   if (Rtc.stratum >= stratum) { return; }
   AddLog(LOG_LEVEL_INFO, PSTR("RTC: release utc=%u phase=%u ms str=%d->16"),
     Rtc.utc_time, RtcMillis(), Rtc.stratum);
+#ifdef USE_RTC_CHIP_HOLDOVER
+  RtcChipTakeOverTime();                         // Set the RTC chip
+#endif  // USE_RTC_CHIP_HOLDOVER
   RTC_PAIR_LOCK();
   RtcDropSource(RTC_STRATUM_NONE);
   Rtc.last_sync = 0;

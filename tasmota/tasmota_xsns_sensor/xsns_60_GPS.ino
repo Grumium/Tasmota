@@ -1206,6 +1206,10 @@ void UBXHandleTIME()
             UBX.state.carrySecs, carried_age, (int32_t)(millis() - b_ms),
             (b_us != arrival), steps, UBX.state.carryFracPpb, Rtc.drift_ppb);
         }
+#ifdef USE_RTC_CHIP_HOLDOVER
+        uint32_t chip_err = 0;
+        bool chip_placed = !edge_seen && RtcChipPlaceSecond(UBX.rec_buffer.values.time, arrival, &b_ms, &b_us, &chip_err);
+#endif  // USE_RTC_CHIP_HOLDOVER
         bool carried = UBX.state.carryValid && (b_us != arrival);
         uint32_t carried_for = UBX.state.carrySecs;
         bool name_ok = true;                     // Carried second matches the message
@@ -1234,6 +1238,9 @@ void UBXHandleTIME()
             Rtc.carried_edge = true;
             Rtc.carried_secs = carried_for;
           }
+#ifdef USE_RTC_CHIP_HOLDOVER
+          if (chip_placed) { Rtc.chip_placed_us = chip_err; }
+#endif  // USE_RTC_CHIP_HOLDOVER
           RTC_PAIR_UNLOCK();
         }
       } else if (!published) {
