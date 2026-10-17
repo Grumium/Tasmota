@@ -167,7 +167,7 @@ typedef struct {
   uint16_t      deepsleep_slip;            // 2D4
   uint8_t       improv_state;              // 2D6
 
-  uint8_t       free_2d7[1];               // 2D7
+  uint8_t       chip_writer_stratum;       // 2D7  Clock stratum when the RTC chip was last set
 
   int32_t       energy_kWhtoday_ph[3];     // 2D8
   int32_t       energy_kWhtotal_ph[3];     // 2E4

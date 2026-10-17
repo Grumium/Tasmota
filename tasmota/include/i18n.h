@@ -345,6 +345,7 @@
 #define D_CMND_LOGPORT "LogPort"
 #define D_CMND_IPADDRESS "IPAddress"
 #define D_CMND_NTPSERVER "NtpServer"
+#define D_CMND_RTCPHASE "Phase"
 #define D_CMND_AP "Ap"
 #define D_CMND_BSSID "BSSId"
 #define D_CMND_SSID "SSId"

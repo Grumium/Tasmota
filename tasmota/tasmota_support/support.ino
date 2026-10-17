@@ -2830,8 +2830,15 @@ void AddLogData(uint32_t loglevel, const char* log_data, const char* log_data_pa
 #endif  // ESP32
 
   char mxtime[21];  // "13:45:21.999-123/12 "
+#ifdef USE_NTP_SERVER
+  TIME_T stamp;
+  uint32_t stamp_ms = RtcStampNow(stamp);           // The second carried when the tick is late
+#else
+  TIME_T &stamp = RtcTime;
+  uint32_t stamp_ms = RtcMillis();
+#endif  // USE_NTP_SERVER
   snprintf_P(mxtime, sizeof(mxtime), PSTR("%02d" D_HOUR_MINUTE_SEPARATOR "%02d" D_MINUTE_SECOND_SEPARATOR "%02d.%03d"),
-    RtcTime.hour, RtcTime.minute, RtcTime.second, RtcMillis());
+    stamp.hour, stamp.minute, stamp.second, stamp_ms);
   if (Settings->flag5.show_heap_with_timestamp) {
 #ifdef ESP8266
     snprintf_P(mxtime, sizeof(mxtime), PSTR("%s-%03d"),

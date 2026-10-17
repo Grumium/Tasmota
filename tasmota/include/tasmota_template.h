@@ -244,6 +244,7 @@ enum UserSelectablePins {
   GPIO_MIEL_HVAC_MB_TX, GPIO_MIEL_HVAC_MB_RX, GPIO_MIEL_HVAC_MB_TXEN,  // Mitsubishi Electric HVAC Modbus RTU slave
 #endif
   GPIO_CC1101_CS,                       // CC1101 SPI chip select
+  GPIO_GPS_PPS,                         // GPS pulse per second for NTP server time base
   GPIO_SENSOR_END };
 
 // Error as warning to rethink GPIO usage with max 2045
@@ -529,6 +530,7 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_MIEL_HVAC_MB_TX "|" D_SENSOR_MIEL_HVAC_MB_RX "|" D_SENSOR_MIEL_HVAC_MB_TXEN "|"
 #endif
   D_SENSOR_CC1101_CS "|"
+  D_SENSOR_GPS_PPS "|"
 ;
 
 const char kSensorNamesFixed[] PROGMEM =
@@ -1126,6 +1128,7 @@ const uint16_t kGpioNiceList[] PROGMEM = {
 #ifdef USE_GPS
   AGPIO(GPIO_GPS_TX),                            // GPS serial interface
   AGPIO(GPIO_GPS_RX) + AGMAX(MAX_GPS_RX),        // GPS serial interface
+  AGPIO(GPIO_GPS_PPS),                           // GPS pulse per second
 #endif
 #ifdef USE_HM10
   AGPIO(GPIO_HM10_TX),                           // HM10 serial interface

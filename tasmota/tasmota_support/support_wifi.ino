@@ -40,6 +40,18 @@ const uint8_t WIFI_CONFIG_SEC = 180;       // seconds before restart
 const uint8_t WIFI_CHECK_SEC = 20;         // seconds
 const uint8_t WIFI_RETRY_OFFSET_SEC = WIFI_RETRY_SECONDS;  // seconds
 
+#ifdef USE_NTP_SERVER
+uint8_t wifi_ntp_stratum = 0;              // Stratum of the last NTP reply
+uint32_t wifi_ntp_root_delay_us = 0;       // Server root delay + our round trip, us
+uint32_t wifi_ntp_root_disp_us = 0;        // Server root dispersion, us
+uint32_t wifi_ntp_reply_delay_us = 0;      // The same for the last reply, used or not
+uint32_t wifi_ntp_reply_disp_us = 0;
+uint32_t wifi_ntp_rtt_us = 0;              // Round trip of the reply used, us
+uint32_t wifi_ntp_refid = 0;               // Server IPv4 address, network order
+char wifi_ntp_server_reply[64] = "";       // Server of the last reply
+char wifi_ntp_server[64] = "";             // Server the clock last used
+
+#endif  // USE_NTP_SERVER
 #include <ESP8266WiFi.h>                   // Wifi, MQTT, Ota, WifiManager
 #include "lwip/dns.h"
 #ifdef ESP32
@@ -1967,6 +1979,326 @@ bool WifiDnsPresent(const char* aHostname) {
   IPAddress aResult;
   return WifiHostByName(aHostname, aResult);
 }
+#ifdef USE_NTP_SERVER
+
+// Hourly NTP sync, drift polls and the repeat after a slow series; staggered by chip id
+void WifiPollNtp() {
+  static uint8_t ntp_sync_minute = 0;
+  static uint32_t ntp_run_time = 0;
+  static uint32_t ntp_poll_secs = 0;     // Drift poll interval, s
+  static uint32_t ntp_poll_next = 0;     // Uptime of the next drift poll, 0 = none
+  static uint32_t ntp_retry_at = 0;      // Uptime of a repeat after a slow sync, 0 = none
+  static uint32_t ntp_rtt_floor = 0;     // Lowest round trip seen from this server, us
+  static uint32_t ntp_floor_refid = 0;
+
+  if (TasmotaGlobal.global_state.network_down || Rtc.user_time_entry) { return; }
+
+  uint8_t uptime_minute = (TasmotaGlobal.uptime / 60) % 60;  // 0 .. 59
+  if ((ntp_sync_minute > 59) && (uptime_minute > 2)) {
+    ntp_sync_minute = 1;                 // If sync prepare for a new cycle
+  }
+  // First try ASAP to sync. If fails try once every 60 seconds based on chip id
+  uint8_t offset = (TasmotaGlobal.uptime < 30) ? RtcTime.second + ntp_run_time : (((ESP_getChipId() & 0xF) * 3) + 3) ;
+
+  if ( (((offset == RtcTime.second) && ( (RtcTime.year < 2016) ||                  // Never synced
+                                         ((Rtc.stratum >= RTC_STRATUM_CHIP) && !Rtc.from_upstream) ||  // Only the RTC chip has the time, retry every minute
+                                         (ntp_sync_minute == uptime_minute))) ||   // Re-sync every hour
+       (ntp_poll_next && ((int32_t)(TasmotaGlobal.uptime - ntp_poll_next) >= 0)) ||  // Drift poll
+       (ntp_retry_at && ((int32_t)(TasmotaGlobal.uptime - ntp_retry_at) >= 0)) ||    // Repeat after a slow sync
+       TasmotaGlobal.ntp_force_sync ) ) {                                          // Forced sync
+
+    TasmotaGlobal.ntp_force_sync = false;
+    bool retry = ntp_retry_at && ((int32_t)(TasmotaGlobal.uptime - ntp_retry_at) >= 0);
+    ntp_retry_at = 0;
+    if (ntp_poll_next && !retry) { ntp_poll_next = TasmotaGlobal.uptime + 60; }   // Retry a failed drift poll in a minute
+
+    AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("NTP: Sync time..."));
+    ntp_run_time = millis();
+    uint32_t boundary_ms, boundary_us;
+    bool phase_ok;
+    uint64_t ntp_nanos = WifiGetNtp(&boundary_ms, &boundary_us, &phase_ok);
+    uint32_t ntp_time = ntp_nanos / 1000000000;
+    ntp_run_time = (millis() - ntp_run_time) / 1000;
+    if (ntp_run_time < 5) { ntp_run_time = 0; }  // DNS timeout is around 10s
+
+    if (ntp_time > START_VALID_TIME) {
+      ntp_sync_minute = 60;             // Sync so block further requests
+      if (phase_ok && !retry) {         // Drift sample, not for a repeat
+        uint8_t sample = RtcUpstreamSample(ntp_time, boundary_us, wifi_ntp_refid, wifi_ntp_rtt_us);
+        if ((RTC_NTP_SAMPLE_ANCHOR == sample) || !ntp_poll_secs) {
+          ntp_poll_secs = RTC_NTP_POLL_MIN;
+        } else if ((RTC_NTP_SAMPLE_OK == sample) && RtcNtpDriftPublished()) {   // Double the interval once drift is known
+          ntp_poll_secs = (ntp_poll_secs * 2 < RTC_NTP_POLL_MAX) ? ntp_poll_secs * 2 : RTC_NTP_POLL_MAX;
+        }
+        ntp_poll_next = (ntp_poll_secs < RTC_NTP_POLL_MAX) ? TasmotaGlobal.uptime + ntp_poll_secs : 0;
+      }
+      if (phase_ok) {                   // Move to the current second
+        uint32_t carry = RtcCarrySeconds(millis() - boundary_ms, nullptr);
+        ntp_time += carry;
+        boundary_ms += carry * 1000;
+        boundary_us += carry * 1000000;
+      }
+      // First sync with this server or a slow round trip: repeat in 16 s. While the clock has an
+      // upstream phase, only the repeat sets it
+      if (wifi_ntp_refid != ntp_floor_refid) { ntp_floor_refid = wifi_ntp_refid; ntp_rtt_floor = 0; }
+      bool slow = !ntp_rtt_floor || (wifi_ntp_rtt_us > (2 * ntp_rtt_floor) + 2000);
+      if (!ntp_rtt_floor || (wifi_ntp_rtt_us < ntp_rtt_floor)) { ntp_rtt_floor = wifi_ntp_rtt_us; }
+      if (slow && !retry) { ntp_retry_at = TasmotaGlobal.uptime + 16; }
+      bool skip = slow && !retry && RtcPhaseNetwork();
+      uint8_t stratum = RTC_STRATUM_UPSTREAM(wifi_ntp_stratum);
+      // Soon after the last sync, step only half of a small offset: the network noise averages out
+      if (phase_ok && !skip && RtcPhaseNetwork() && ((TasmotaGlobal.uptime - Rtc.last_sync) < RTC_MAX_POLL_SECS)) {
+        int32_t off;
+        if ((RtcSecondAt(boundary_us, &off) == ntp_time) && (abs(off) < RTC_NTP_HALF_STEP_US)) {
+          boundary_us -= off / 2;
+          boundary_ms -= off / 2000;
+        }
+      }
+      // Set the clock with the phase, or else with the whole second
+      bool set_ok = phase_ok && !skip &&
+        RtcSetBoundary(ntp_time, boundary_ms, boundary_us, stratum, RTC_SYNC_AGE_UPSTREAM,
+                       RTC_PHASE_NETWORK, false);
+      bool taken = set_ok;
+      if (taken) {
+        RtcSynced("NTP");
+      } else if (!skip) {
+        taken = RtcSync("NTP", ntp_time, stratum, RTC_PHASE_NONE, RTC_SYNC_AGE_UPSTREAM, true);
+      }
+      if (taken) {                      // Server values only from a reply the clock took
+        RTC_PAIR_LOCK();
+        Rtc.ntp_refid = wifi_ntp_refid;
+        wifi_ntp_root_delay_us = wifi_ntp_reply_delay_us;
+        wifi_ntp_root_disp_us = wifi_ntp_reply_disp_us;
+        RTC_PAIR_UNLOCK();
+        strlcpy(wifi_ntp_server, wifi_ntp_server_reply, sizeof(wifi_ntp_server));
+      }
+    } else {
+      ntp_sync_minute++;                // Try again in next minute
+    }
+  }
+}
+
+// micros() at the start of the second in the reply's transmit time (t3).
+// Network delay = (round trip - server time) / 2. false if the server time exceeds the round trip
+bool WifiNtpBoundary(const uint8_t* p, uint32_t sent_us, uint32_t recv_us, uint32_t* t3_secs, uint32_t* boundary_us) {
+  auto be32 = [](const uint8_t* q) { return ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 8) | q[3]; };
+  uint32_t t2s = be32(p + 32), t2f = be32(p + 36), t3s = be32(p + 40), t3f = be32(p + 44);
+  if (!t2s || !t3s) { return false; }
+  int64_t proc = (int64_t)((((uint64_t)t3s << 32) | t3f) - (((uint64_t)t2s << 32) | t2f));
+  int64_t proc_us = ((proc > -(1LL << 33)) && (proc < (1LL << 33))) ? ((proc * 1000000LL) >> 32) : -1;   // Also after 2036
+  uint32_t rtt_us = recv_us - sent_us;
+  if ((proc_us < 0) || (proc_us >= (int64_t)rtt_us)) { return false; }
+  uint32_t frac_us = (uint32_t)(((uint64_t)t3f * 1000000) >> 32);
+  *t3_secs = t3s;
+  *boundary_us = recv_us - (((rtt_us - (uint32_t)proc_us) / 2) + frac_us);
+  return true;
+}
+
+// One sync with the current server: median of the replies; the second and its start, 0 = failed
+uint64_t WifiGetNtp(uint32_t* boundary_ms, uint32_t* boundary_us, bool* phase_ok) {
+  *phase_ok = false;
+  static uint8_t ntp_server_id = 0;
+
+
+  IPAddress time_server_ip;
+
+  char fallback_ntp_server[2][32];
+  ext_snprintf_P(fallback_ntp_server[0], sizeof(fallback_ntp_server[0]), PSTR("%_I"), Settings->ipv4_address[1]);  // #17984
+  ext_snprintf_P(fallback_ntp_server[1], sizeof(fallback_ntp_server[1]), PSTR("%d.pool.ntp.org"), random(0,3));
+
+  char* ntp_server;
+  for (uint32_t i = 0; i < MAX_NTP_SERVERS +2; i++) {
+    if (ntp_server_id >= MAX_NTP_SERVERS +2) { ntp_server_id = 0; }
+    ntp_server = (ntp_server_id < MAX_NTP_SERVERS) ? SettingsText(SET_NTPSERVER1 + ntp_server_id) : fallback_ntp_server[ntp_server_id - MAX_NTP_SERVERS];
+    if (strlen(ntp_server)) {
+      break;
+    }
+    ntp_server_id++;
+  }
+  if (!WifiHostByName(ntp_server, time_server_ip)) {
+    ntp_server_id++;
+    return 0;
+  }
+
+
+#ifdef ESP32
+  if ((IPv4 == time_server_ip.type()) && !(uint32_t)time_server_ip) {   // 0.0.0.0, e.g. no gateway
+    ntp_server_id++;                                // would be sent as broadcast
+    return 0;
+  }
+  // ESP32: send and receive times are taken in the tcpip thread, without the main loop latency
+  static NtpUdp ntp_udp;
+  static NtpUdpLast ntp_last;
+  ntp_udp.fn = NtpUdpKeepLast;
+  ntp_udp.arg = &ntp_last;
+  if (!NtpUdpOpen(&ntp_udp, 0)) { return 0; }
+  NtpUdpDropLast(&ntp_last);
+  ip_addr_t server_addr;
+  time_server_ip.to_ip_addr_t(&server_addr);
+#else
+  WiFiUDP udp;
+
+  uint32_t attempts = 3;
+  while (attempts > 0) {
+    uint32_t port = random(1025, 65535);   // Create a random port for the UDP connection.
+#ifdef USE_IPV6
+    if (udp.begin(IPAddress(IPv6), port) != 0) {
+#else
+    if (udp.begin(port) != 0) {
+#endif
+      break;
+    }
+    attempts--;
+  }
+  if (0 == attempts) { return 0; }
+
+  while (udp.parsePacket() > 0) {          // Discard any previously received packets
+    yield();
+  }
+#endif  // ESP32
+
+  const uint32_t NTP_PACKET_SIZE = 48;     // NTP time is in the first 48 bytes of message
+  const uint32_t NTP_QUERIES = 4;
+  uint8_t packet_buffer[NTP_PACKET_SIZE];  // Buffer to hold incoming & outgoing packets
+  memset(packet_buffer, 0, NTP_PACKET_SIZE);
+  packet_buffer[0]  = 0b11100011;          // LI, Version, Mode
+  packet_buffer[1]  = 0;                   // Stratum, or type of clock
+  packet_buffer[2]  = 6;                   // Polling Interval
+  packet_buffer[3]  = 0xEC;                // Peer Clock Precision
+  packet_buffer[12] = 49;
+  packet_buffer[13] = 0x4E;
+  packet_buffer[14] = 49;
+  packet_buffer[15] = 52;
+
+  // Send NTP_QUERIES requests. The fastest reply gives the second and the header, the time is the
+  // median of all replies. The reply must carry our transmit time as origin. Stop on a timeout
+  uint8_t reply[NTP_PACKET_SIZE];
+  uint8_t best[NTP_PACKET_SIZE];
+  uint32_t sent_micros = 0, recv_micros = 0, recv_millis = 0;
+  uint32_t best_rtt_us = UINT32_MAX;
+  uint32_t phase_secs[NTP_QUERIES], phase_us[NTP_QUERIES], phase_rtt[NTP_QUERIES];
+  uint32_t phases = 0, median_rtt_us = 0;
+  for (uint32_t query = 1; query <= NTP_QUERIES; query++) {
+    packet_buffer[47] = query;
+#ifdef ESP32
+    uint32_t sent_us;
+    if (!NtpUdpSend(&ntp_udp, &server_addr, 123, packet_buffer, NTP_PACKET_SIZE, &sent_us)) { break; }
+#else
+    if (udp.beginPacket(time_server_ip, 123) == 0) { break; }   // NTP requests are to port 123
+    udp.write(packet_buffer, NTP_PACKET_SIZE);
+    udp.endPacket();
+    uint32_t sent_us = micros();
+#endif  // ESP32
+    uint32_t begin_wait = millis();
+    bool answered = false;
+    while (!answered && !TimeReached(begin_wait + 1000)) {       // Wait up to one second
+#ifdef ESP32
+      uint32_t recv_us, recv_ms;
+      if (NtpUdpTakeLast(&ntp_last, reply, &recv_us, &recv_ms)) {
+#else
+      if ((udp.parsePacket() >= NTP_PACKET_SIZE) && (udp.remotePort() == 123)) {
+        uint32_t recv_us = micros();
+        uint32_t recv_ms = millis();
+        udp.read(reply, NTP_PACKET_SIZE);
+#endif  // ESP32
+        if (memcmp(reply + 24, packet_buffer + 40, 8)) { continue; }   // Reply to another request
+        answered = true;
+        bool kod = (0 == reply[1]);                 // Kiss-o'-Death
+        if (kod) { query = NTP_QUERIES; }
+        if (!kod && WifiNtpBoundary(reply, sent_us, recv_us, &phase_secs[phases], &phase_us[phases])) {
+          phase_rtt[phases] = recv_us - sent_us;
+          phases++;
+        }
+        if (((recv_us - sent_us) < best_rtt_us) && !(kod && (UINT32_MAX != best_rtt_us))) {
+          best_rtt_us = recv_us - sent_us;
+          memcpy(best, reply, NTP_PACKET_SIZE);
+          sent_micros = sent_us;
+          recv_micros = recv_us;
+          recv_millis = recv_ms;
+        }
+      } else {
+        delay(1);                                   // Short, adds to the round trip
+      }
+    }
+    if (!answered) { break; }
+  }
+#ifdef ESP32
+  NtpUdpClose(&ntp_udp);
+#else
+  udp.stop();
+#endif  // ESP32
+  if (UINT32_MAX == best_rtt_us) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NTP: No reply from %_I"), (uint32_t)time_server_ip);
+    ntp_server_id++;                                // Next server next time
+    return 0;
+  }
+  memcpy(packet_buffer, best, NTP_PACKET_SIZE);
+
+  if ((packet_buffer[0] & 0b11000000) == 0b11000000) {
+    // Leap-Indicator: unknown (clock unsynchronized)
+    // See: https://github.com/letscontrolit/ESPEasy/issues/2886#issuecomment-586656384
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NTP: IP %_I unsynced"), (uint32_t)time_server_ip);
+    ntp_server_id++;                            // Next server next time
+    return 0;
+  }
+
+  // Kiss-o'-Death (stratum 0), stratum 15 (we would be 16) or unsynchronized, or root delay/dispersion >= 16 s
+  if ((0 == packet_buffer[1]) || (packet_buffer[1] > 14) || packet_buffer[4] || (packet_buffer[5] >= 16) ||
+      packet_buffer[8] || (packet_buffer[9] >= 16)) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NTP: IP %_I stratum %d, ignored"), (uint32_t)time_server_ip, packet_buffer[1]);
+    ntp_server_id++;                            // Next server next time
+    return 0;
+  }
+  // convert four bytes starting at location 40 to a long integer
+  // TX time is used here.
+  uint32_t secs_since_1900 = (uint32_t)packet_buffer[40] << 24;
+  secs_since_1900 |= (uint32_t)packet_buffer[41] << 16;
+  secs_since_1900 |= (uint32_t)packet_buffer[42] << 8;
+  secs_since_1900 |= (uint32_t)packet_buffer[43];
+  if (0 == secs_since_1900) {                   // No time stamp received
+    ntp_server_id++;                            // Next server next time
+    return 0;
+  }
+  wifi_ntp_stratum = packet_buffer[1];           // Our stratum is one more
+  uint32_t up_delay_us = NtpShortToUs(packet_buffer + 4);        // Server root delay
+  wifi_ntp_reply_disp_us = NtpShortToUs(packet_buffer + 8);      // Server root dispersion
+  wifi_ntp_refid = (uint32_t)time_server_ip;
+  strlcpy(wifi_ntp_server_reply, ntp_server, sizeof(wifi_ntp_server_reply));
+
+  uint32_t tmp_fraction = (uint32_t)packet_buffer[44] << 24;
+  tmp_fraction |= (uint32_t)packet_buffer[45] << 16;
+  tmp_fraction |= (uint32_t)packet_buffer[46] << 8;
+  tmp_fraction |= (uint32_t)packet_buffer[47];
+  uint32_t fraction = (((uint64_t)tmp_fraction) * 1000000000) >> 32;
+
+  // Median of the replies, all moved onto the second of the fastest one. Root delay uses the larger
+  // round trip of the replies the median comes from
+  if (phases) {
+    int32_t d[NTP_QUERIES];
+    uint32_t r[NTP_QUERIES];
+    for (uint32_t n = 0; n < phases; n++) {
+      d[n] = (int32_t)(phase_us[n] - (int32_t)(phase_secs[n] - secs_since_1900) * 1000000 - phase_us[0]);
+      r[n] = phase_rtt[n];
+      for (uint32_t m = n; (m > 0) && (d[m] < d[m - 1]); m--) {
+        int32_t t = d[m]; d[m] = d[m - 1]; d[m - 1] = t;
+        uint32_t u = r[m]; r[m] = r[m - 1]; r[m - 1] = u;
+      }
+    }
+    uint32_t lo = (phases - 1) / 2, hi = phases / 2;     // Middle one, or middle two
+    int32_t mid = (d[lo] + d[hi]) / 2;
+    median_rtt_us = (r[lo] > r[hi]) ? r[lo] : r[hi];
+    *boundary_us = phase_us[0] + mid;                // d[] is relative to phase_us[0]
+    *boundary_ms = recv_millis - (int32_t)(recv_micros - *boundary_us) / 1000;
+    *phase_ok = true;
+  }
+  uint32_t rtt_us = phases ? median_rtt_us : (recv_micros - sent_micros);   // Round trip of the time used
+  if (rtt_us > 2000000UL) { rtt_us = 2000000UL; } // Max 2 s
+  wifi_ntp_reply_delay_us = up_delay_us + rtt_us;
+  wifi_ntp_rtt_us = rtt_us;
+
+  return (uint64_t)NtpSecsToUnix(secs_since_1900) * 1000000000 + fraction;
+}
+#else
 
 /**
  * Periodically polls NTP servers to synchronize device time
@@ -2157,6 +2489,7 @@ uint64_t WifiGetNtp(void) {
   ntp_server_id++;                                  // Next server next time
   return 0;
 }
+#endif  // USE_NTP_SERVER
 
 // --------------------------------------------------------------------------------
 // Respond to some Arduino/esp-idf events for better IPv6 support

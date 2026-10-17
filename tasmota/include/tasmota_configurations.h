@@ -1158,4 +1158,12 @@
   #define CODE_IMAGE_STR "tasmota"
 #endif
 
+/*********************************************************************************************\
+ * NTP server clock
+\*********************************************************************************************/
+
+#if defined(USE_GPS) || defined(RTC_NTP_SERVER)
+#define USE_NTP_SERVER                                 // NTP server clock with GPS PPS, drift and holdover
+#endif
+
 #endif  // _TASMOTA_CONFIGURATIONS_H_

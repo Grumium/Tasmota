@@ -35,13 +35,18 @@
  * #define USE_RX8025
  *   RX8025 at I2C address 0x32
  *   Used by MSB Master G2
+ * #define RTC_NTP_SERVER
+ *   NTP server from the chip's time, phase from upstream NTP (enables USE_NTP_SERVER)
 \*********************************************************************************************/
 
 #define XDRV_56             56
 
-#ifdef USE_GPS                     // GPS driver has it's own NTP server
-#undef RTC_NTP_SERVER              // Disable NTP server (+0k8 code)
-#endif
+#ifdef USE_NTP_SERVER
+#define RTC_PHASE_SYNC_SECS  3600              // Check the chip phase every hour, s
+#define RTC_PHASE_MAX_WINDOW 250000            // Max us between two reads around the step
+#define RTC_RELEASE_MAX_RELOADS 3              // Max reloads before releasing anyway
+#define RTC_CHIP_PHASE_MAX_MS  150             // Max chip phase error before the chip is set again, ms
+#endif  // USE_NTP_SERVER
 
 struct {
   uint32_t (* ReadTime)(void);
@@ -49,6 +54,13 @@ struct {
   int32_t (* MemRead)(uint8_t *, uint32_t);
   int32_t (* MemWrite)(uint8_t *, uint32_t);
   void (* ShowSensor)(bool);
+#ifdef USE_NTP_SERVER
+  uint32_t phase_time;              // Chip second waiting for its step, 0 = idle
+  uint32_t phase_seen;              // micros() of the last read of that second
+  uint8_t phase_polls;              // Reads waiting for the step
+  uint8_t phase_tries;              // Retries after a read gap too wide
+  uint32_t phase_audit;             // Uptime of the last phase check
+#endif  // USE_NTP_SERVER
   bool detected;
   int8_t mem_size = -1;
   uint8_t address;
@@ -996,16 +1008,113 @@ void RtcChipDetect(void) {
   if (Rtc.utc_time < START_VALID_TIME) {                          // Not sync with NTP/GPS (time not valid), so read time
     uint32_t time = RtcChip.ReadTime();                           // Read UTC TIME
     if (time > START_VALID_TIME) {
+#ifdef USE_NTP_SERVER
+      RtcSync(RtcChip.name, time, RTC_STRATUM_CHIP, RTC_PHASE_COLD, RTC_PHASE_SYNC_SECS);
+#else
       Rtc.utc_time = time;
       RtcSync(RtcChip.name);
+#endif  // USE_NTP_SERVER
     }
   }
 }
+#ifdef USE_NTP_SERVER
+/*********************************************************************************************\
+ * RTC chip phase: read it, and set it from our clock
+\*********************************************************************************************/
+
+bool RtcChipPresent(void) {
+  return RtcChip.detected;
+}
+
+uint8_t RtcChipStratum(void) {
+  uint8_t writer = RtcSettings.chip_writer_stratum;
+  uint8_t earned = (writer > 0 && writer < RTC_STRATUM_NONE) ? (writer + 1) : RTC_STRATUM_CHIP;
+  return (earned > RTC_STRATUM_CHIP) ? earned : RTC_STRATUM_CHIP;
+}
+
+void RtcChipSyncPhaseStart(void) {
+  RtcChip.phase_time = RtcChip.ReadTime();
+  RtcChip.phase_seen = micros();
+  RtcChip.phase_polls = 0;
+}
+
+// Every 100 ms: watch the seconds register for its step when the clock needs the chip phase.
+// Then use it, or start the fine catch
+void RtcChipSyncPhasePoll(void) {
+  if (!RtcChip.ReadTime) { return; }
+  if (!RtcChip.phase_time) {                                      // Idle, check needed?
+    bool unheld = (RTC_STRATUM_NONE == Rtc.stratum);
+    bool cold = (RTC_PHASE_COLD == Rtc.phase_source);
+    bool audit = false;
+    bool place = false;
+    bool stale = ((TasmotaGlobal.uptime - Rtc.last_sync) >= RTC_PHASE_SYNC_SECS) &&
+                 ((TasmotaGlobal.uptime - RtcChip.phase_audit) >= RTC_PHASE_SYNC_SECS);
+    bool want = (unheld || cold || audit || place || stale);
+    bool allowed = (audit || place || RtcBoundaryAllowed(RTC_STRATUM_CHIP, RTC_PHASE_SYNC_SECS));
+    if ((Rtc.utc_time > START_VALID_TIME) && want && allowed) {
+      if (audit || stale) { RtcChip.phase_audit = TasmotaGlobal.uptime; }
+      RtcChip.phase_tries = 0;
+      RtcChipSyncPhaseStart();
+    }
+    return;
+  }
+
+  uint32_t before = micros();
+  uint32_t time = RtcChip.ReadTime();
+  uint32_t after = micros();
+  uint32_t after_ms = millis();
+  if (time == RtcChip.phase_time) {
+    if (RtcChip.phase_polls++ > 15) {                             // Over a second
+      RtcChip.phase_time = 0;                                     // Chip stopped
+      AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s not ticking"), RtcChip.name);
+    }
+    RtcChip.phase_seen = after;                                   // Same second
+    return;
+  }
+
+  RtcChip.phase_time = 0;
+  if (time < START_VALID_TIME) { return; }
+
+  uint32_t span = before - RtcChip.phase_seen;
+  uint32_t elapsed = (after - before) + (span / 2);
+  if (elapsed > RTC_PHASE_MAX_WINDOW) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s phase window %u us, too wide (tries=%d before_re-arm)"),
+      RtcChip.name, elapsed, RtcChip.phase_tries);
+    if (RtcChip.phase_tries++ < 5) {
+      RtcChipSyncPhaseStart();
+    }
+    return;
+  }
+  if ((Rtc.stratum >= RTC_STRATUM_CHIP) && RtcChipCrystalCarries()) {
+    RtcChip.phase_tries = 0;
+    return;
+  }
+  uint32_t b_ms, b_us;
+  b_ms = after_ms - (elapsed / 1000);
+  b_us = after - elapsed;
+  RtcSetBoundary(time, b_ms, b_us, RTC_STRATUM_CHIP, RTC_PHASE_SYNC_SECS, RTC_PHASE_REGISTER, false);
+  RtcChip.phase_tries = 0;
+  AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s phase synced, %u us in"), RtcChip.name, elapsed);
+}
+
+// While powered, the drift corrected ESP crystal is better than the chip
+bool RtcChipCrystalCarries(void) {
+  return (Rtc.drift_ppb != 0) && (Rtc.stratum < RTC_STRATUM_NONE) &&
+         (RTC_PHASE_COLD != Rtc.phase_source);
+}
+
+#endif  // USE_NTP_SERVER
 
 void RtcChipTimeSynced(void) {
+#ifdef USE_NTP_SERVER
+  if ((Rtc.stratum >= RTC_STRATUM_CHIP) && (RTC_PHASE_MANUAL != Rtc.phase_source)) { return; }   // Time from the chip
+#endif  // USE_NTP_SERVER
   if ((Rtc.utc_time > START_VALID_TIME) &&                        // Valid UTC time
       (abs((int32_t)(Rtc.utc_time - RtcChip.ReadTime())) > 2)) {  // Time has drifted from RTC more than 2 seconds
     RtcChip.SetTime(Rtc.utc_time);                                // Update time
+#ifdef USE_NTP_SERVER
+    RtcSettings.chip_writer_stratum = Rtc.stratum;
+#endif  // USE_NTP_SERVER
     AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: %s re-synced (" D_UTC_TIME ") %s"), RtcChip.name, GetDateAndTime(DT_UTC).c_str());
   }
 }
@@ -1036,39 +1145,68 @@ int32_t RtcChipMemWrite(uint8_t *buffer, uint32_t size) {
 #include "NTPServer.h"
 #include "NTPPacket.h"
 
-#define NTP_MILLIS_OFFSET   50
-
 const char kRtcChipCommands[] PROGMEM = "Rtc|"  // Prefix
-  D_CMND_NTPSERVER;
+  D_CMND_NTPSERVER
+  ;
 
 void (* const RtcChipCommand[])(void) PROGMEM = {
-  &CmndRtcNtpServer };
+  &CmndRtcNtpServer,
+  };
 
 NtpServer RtcChipTimeServer(PortUdp);
 
-void RtcChipEverySecond(void) {
-  static bool ntp_server_started = false;
+#ifdef ESP32
+bool RtcChipNtpSource(NtpTimeBase* base, uint32_t* utc, uint32_t* boundary_us) {
+  if (TasmotaGlobal.global_state.network_down || !Settings->sbflag1.local_ntp_server) { return false; }
+  return RtcNtpRequest(RTC_NTP_OWNER_CHIP, base, utc, boundary_us);
+}
+#endif  // ESP32
 
-  if (TasmotaGlobal.global_state.network_down) { return; }  // Exception on ESP32 if network is down (#17338)
-
-  if (Settings->sbflag1.local_ntp_server && (Rtc.utc_time > START_VALID_TIME)) {
-    if (!ntp_server_started) {
-      if (RtcChipTimeServer.beginListening()) {
-        ntp_server_started = true;
-        AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: NTP server started"));
-      }
-    } else {
-      RtcChipTimeServer.processOneRequest(Rtc.utc_time, NTP_MILLIS_OFFSET);
-    }
+// Open NTP port 123 for the chip server, unless already used
+void RtcChipNtpListen(void) {
+  if (RtcNtpBoundBy(RTC_NTP_OWNER_CHIP) || !RtcNtpBind(RTC_NTP_OWNER_CHIP)) { return; }
+#ifdef ESP32
+  RtcChipTimeServer.setSource(RtcChipNtpSource, RtcNtpSent);
+#endif  // ESP32
+  if (RtcChipTimeServer.beginListening()) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: NTP server started"));
+  } else {
+    RtcNtpRelease(RTC_NTP_OWNER_CHIP);             // Failed
   }
 }
 
+void RtcChipNtpEverySecond(void) {
+  if (TasmotaGlobal.global_state.network_down) { return; }  // Exception on ESP32 if network is down (#17338)
+  if (!RtcChip.detected) { return; }
+  if (!Settings->sbflag1.local_ntp_server || (Rtc.utc_time <= START_VALID_TIME)) { return; }
+  RtcChipNtpListen();
+}
+
+void RtcChipHandleNtp(void) {
+  if (!RtcChipTimeServer.polled()) { return; }    // ESP32 answers in NtpRecv()
+  NtpTimeBase base;
+  uint32_t utc, boundary_us;
+  if (!RtcNtpRequest(RTC_NTP_OWNER_CHIP, &base, &utc, &boundary_us)) { RtcChipTimeServer.dropRequest(); return; }
+  if (RtcChipTimeServer.processOneRequest(utc, boundary_us, base)) { RtcNtpSent(base); }
+}
+
 void CmndRtcNtpServer(void) {
-  // RtcChipNtpServer 0 or 1
-  if ((XdrvMailbox.payload >= 0) && !TasmotaGlobal.global_state.network_down) {
+  if (!RtcChip.detected) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: no chip, NTP server not available"));
     Settings->sbflag1.local_ntp_server = 0;
-    if ((XdrvMailbox.payload &1) && RtcChipTimeServer.beginListening()) {
+    ResponseCmndStateText(0);
+    return;
+  }
+  if (((0 == XdrvMailbox.payload) || (1 == XdrvMailbox.payload)) && !TasmotaGlobal.global_state.network_down) {
+    if (XdrvMailbox.payload) {
       Settings->sbflag1.local_ntp_server = 1;
+      RtcChipNtpListen();
+    } else {
+      Settings->sbflag1.local_ntp_server = 0;
+      if (RtcNtpBoundBy(RTC_NTP_OWNER_CHIP)) {       // Release for the GPS server
+        RtcChipTimeServer.stopListening();
+        RtcNtpRelease(RTC_NTP_OWNER_CHIP);
+      }
     }
   }
   ResponseCmndStateText(Settings->sbflag1.local_ntp_server);
@@ -1084,8 +1222,12 @@ bool Xdrv56(uint32_t function) {
 
 #ifdef RTC_NTP_SERVER
   switch (function) {
+    case FUNC_LOOP:
+    case FUNC_SLEEP_LOOP:
+      RtcChipHandleNtp();
+      break;
     case FUNC_EVERY_SECOND:
-      RtcChipEverySecond();
+      RtcChipNtpEverySecond();
       break;
     case FUNC_COMMAND:
       result = DecodeCommand(kRtcChipCommands, RtcChipCommand);
@@ -1101,6 +1243,11 @@ bool Xdrv56(uint32_t function) {
       case FUNC_TIME_SYNCED:
         RtcChipTimeSynced();
         break;
+#ifdef USE_NTP_SERVER
+      case FUNC_EVERY_100_MSECOND:
+        RtcChipSyncPhasePoll();
+        break;
+#endif  // USE_NTP_SERVER
       case FUNC_WEB_SENSOR:
         if (RtcChip.ShowSensor) RtcChip.ShowSensor(0);
         break;
