@@ -119,8 +119,35 @@ extern "C" {
 \*********************************************************************************************/
 // // call a function (if exists) of type void -> void
 
+// Does Berry use 'rule' or 'tele' events (tasmota._rules not empty, or a cmd() running)?
+// Checked before building the event payload. Returns true if unsure
+bool BerryRulesWanted(void) {
+  bvm *vm = berry.vm;
+  if (nullptr == vm) { return false; }
+  bool wanted = true;
+  be_getglobal(vm, PSTR("tasmota"));
+  if (be_isinstance(vm, -1)) {
+    be_getmember(vm, -1, PSTR("cmd_res"));
+    bool capture = !be_isnil(vm, -1);
+    be_pop(vm, 1);
+    be_getmember(vm, -1, PSTR("_rules"));
+    bool rules = !be_isnil(vm, -1);
+    if (be_isinstance(vm, -1)) {
+      // A Berry list keeps its data in '.p'
+      be_getmember(vm, -1, PSTR(".p"));
+      rules = (be_data_size(vm, -1) != 0);           // -1 = not a list
+      be_pop(vm, 1);
+    }
+    be_pop(vm, 1);
+    wanted = capture || rules;
+  }
+  be_pop(vm, 1);
+  return wanted;
+}
+
 // If event == nullptr, then take XdrvMailbox.data
 bool callBerryRule(const char *event, bool teleperiod) {
+  if (!BerryRulesWanted()) { return false; }
   bool save_rules_busy = berry.rules_busy;
   bool exec_rule = !save_rules_busy;       // true if the rule is executed, false if we only record the value
   // if (berry.rules_busy) { return false; }
