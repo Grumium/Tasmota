@@ -136,8 +136,10 @@ const uint8_t kExpressionOperatorsPriorities[] PROGMEM = {1, 1, 2, 2, 3, 4};
 // Define to indicate that rules are always enabled
 #ifdef USE_BERRY
   #define BERRY_RULES     1
+  #define BERRY_RULES_WANTED()  BerryRulesWanted()   // A Berry rule or cmd() capture wants events now
 #else
   #define BERRY_RULES     0
+  #define BERRY_RULES_WANTED()  false
 #endif
 
 // Forward declarations for the shared System Events helpers defined in
@@ -999,7 +1001,7 @@ void RulesEvery50ms(void)
 }
 
 void RulesEvery100ms(void) {
-  if ((Settings->rule_enabled || BERRY_RULES) && !Rules.busy && (TasmotaGlobal.uptime > 4)) {  // Any rule enabled and allow 4 seconds start-up time for sensors (#3811)
+  if ((Settings->rule_enabled || BERRY_RULES_WANTED()) && !Rules.busy && (TasmotaGlobal.uptime > 4)) {  // Any rule enabled and allow 4 seconds start-up time for sensors (#3811)
     if (GetNextSensor()) {
       RulesProcessEvent(ResponseData());
     }
