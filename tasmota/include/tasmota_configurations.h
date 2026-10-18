@@ -1165,5 +1165,12 @@
 #if defined(USE_GPS) || defined(RTC_NTP_SERVER)
 #define USE_NTP_SERVER                                 // NTP server clock with GPS PPS, drift and holdover
 #endif
+#if defined(USE_NTP_SERVER) && defined(USE_RTC_CHIPS)
+#if defined(USE_GPS) && !defined(DISABLE_RTC_CHIP_HOLDOVER)
+#define USE_RTC_CHIP_HOLDOVER                          // Keep the RTC chip accurate to the ms across a power loss
+#endif
+#else
+#undef USE_RTC_CHIP_HOLDOVER                           // Needs an NTP server and an RTC chip
+#endif
 
 #endif  // _TASMOTA_CONFIGURATIONS_H_

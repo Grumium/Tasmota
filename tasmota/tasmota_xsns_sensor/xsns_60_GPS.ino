@@ -1154,7 +1154,18 @@ void UBXHandleTIME()
           if (published) { UBX.state.carryMismatch = 0; }
         } else {
           uint32_t b_ms = millis(), b_us = arrival;
+#ifdef USE_RTC_CHIP_HOLDOVER
+          uint32_t chip_err = 0;
+          bool chip_placed = !edge_seen && RtcChipPlaceSecond(UBX.rec_buffer.values.time, arrival, &b_ms, &b_us, &chip_err);
+#endif  // USE_RTC_CHIP_HOLDOVER
           published = RtcSetBoundary(UBX.rec_buffer.values.time, b_ms, b_us, stratum, 2, RTC_PHASE_NONE, true);
+#ifdef USE_RTC_CHIP_HOLDOVER
+          if (published && chip_placed) {
+            RTC_PAIR_LOCK();
+            Rtc.chip_placed_us = chip_err;
+            RTC_PAIR_UNLOCK();
+          }
+#endif  // USE_RTC_CHIP_HOLDOVER
         }
       } else if (!published) {
         AddLog(LOG_LEVEL_DEBUG, PSTR("UBX: no boundary this second, age %d"), edge_age);
