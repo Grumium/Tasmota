@@ -841,6 +841,7 @@
 //    #define USE_RX8025                           // [I2cDriver90] Enable RX8025 RTC support both I2C buses on ESP32 (I2C address 0x32) 
 //    #define USE_RX8030                           // [I2cDriver90] Enable RX8030 RTC - used by #23855 - support both I2C buses on ESP32 (I2C address 0x32) (+0k7 code)
 //    #define USE_PCF85063                         // [I2cDriver92] Enable PCF85063 RTC support (I2C address 0x51)
+//    #define RTC_NTP_SERVER                       // Enable NTP server with time from the RTC chip and upstream NTP
 
 //  #define USE_AGS02MA                            // [I2cDriver95] Enable AGS02MA Air Quality Sensor (I2C address 0x1A)
 

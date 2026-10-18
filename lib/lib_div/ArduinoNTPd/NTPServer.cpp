@@ -3,6 +3,7 @@
  * Description:
  *   NTP server implementation.
  * Author: Mooneer Salem <mooneer@gmail.com>
+ *         Jan-David Förster and Claude
  * License: New BSD License
  */
 
@@ -11,88 +12,89 @@
 
 #include "NTPPacket.h"
 #include "NTPServer.h"
+#include "NtpWire.h"
+
+#ifdef ESP32
+#include "NtpUdp.h"
+#endif  // ESP32
 
 #define NTP_PORT 123
-#define NTP_TIMESTAMP_DIFF     (2208988800)    // 1900 to 1970 in seconds
+#ifdef ESP32
+// Answer a request in the tcpip thread, rxUs is its receive time. No logging
+static void NtpRecv(NtpUdp *u, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, uint16_t port,
+                    uint32_t rxUs)
+{
+  NtpServer *self = (NtpServer *)u->arg;
+  NtpPacket packet;
+  if (p && self && self->source_ &&
+      NtpRequestOk(packet, pbuf_copy_partial(p, &packet, NtpPacket::PACKET_SIZE, 0))) {
+    NtpTimeBase base;
+    uint32_t utc, boundaryUs;
+    if (self->source_(&base, &utc, &boundaryUs)) {
+      // A new second may have started after the packet arrived: use the previous one
+      int32_t since = (int32_t)(rxUs - boundaryUs);
+      if (since < 0) { utc--; since += 1000000; }
+      NtpFillReply(packet, utc, (uint32_t)since, base);
+      struct pbuf *reply = pbuf_alloc(PBUF_TRANSPORT, NtpPacket::PACKET_SIZE, PBUF_RAM);
+      if (reply) {
+        NtpSetTransmit(packet, utc, (uint32_t)since + (micros() - rxUs), base.tickPpb);
+        packet.swapEndian();
+        memcpy(reply->payload, packet.packet(), NtpPacket::PACKET_SIZE);
+        udp_sendto(pcb, reply, addr, port);
+        pbuf_free(reply);
+        if (self->sent_) { self->sent_(base); }
+      }
+    }
+  }
+  if (p) { pbuf_free(p); }
+}
+#endif  // ESP32
 
 bool NtpServer::beginListening()
 {
-  if (timeServerPort_.begin(NTP_PORT)){
-    return true;
+#ifdef ESP32
+  if (source_) {
+    udp_.fn = NtpRecv;
+    udp_.arg = this;
+    return NtpUdpOpen(&udp_, NTP_PORT);
   }
-  return false;
+#endif  // ESP32
+  return timeServerPort_.begin(NTP_PORT);
 }
 
-bool NtpServer::processOneRequest(uint32_t utc, uint32_t millisecs)
+void NtpServer::stopListening()
 {
-  // millisecs is millis() at the time of the last iTOW reception, where iTOW%1000 == 0
-  uint32_t refMillis = millis()-millisecs;
-  if (refMillis>999){
-    utc++;
-    refMillis = refMillis%1000;
+#ifdef ESP32
+  if (udp_.pcb) {
+    NtpUdpClose(&udp_);
+    return;
   }
+#endif  // ESP32
+  timeServerPort_.stop();
+}
 
-  bool processed = false;
-
+bool NtpServer::processOneRequest(uint32_t utc, uint32_t microsecs, const NtpTimeBase &base)
+{
+  uint32_t elapsed = micros() - microsecs;
   int packetDataSize = timeServerPort_.parsePacket();
-  if (packetDataSize && packetDataSize >= NtpPacket::PACKET_SIZE)
-  {
-      // We need the time we've received the packet in our response.
-      uint32_t recvSecs =  utc + NTP_TIMESTAMP_DIFF;
+  if (packetDataSize <= 0) { return false; }
+  NtpPacket packet;
+  timeServerPort_.read((char*)&packet, NtpPacket::PACKET_SIZE);
+  if (!NtpRequestOk(packet, packetDataSize)) { return false; }
+  NtpFillReply(packet, utc, elapsed, base);
+  NtpSetTransmit(packet, utc, micros() - microsecs, base.tickPpb);
+  packet.swapEndian();
+  timeServerPort_.beginPacket(timeServerPort_.remoteIP(), timeServerPort_.remotePort());
+  timeServerPort_.write((const uint8_t *)packet.packet(), NtpPacket::PACKET_SIZE);
+  timeServerPort_.endPacket();
+  return true;
+}
 
-      uint64_t recvFract64 = refMillis;
-      recvFract64 <<= 32;
-      recvFract64 /= 1000;
-      uint32_t recvFract = recvFract64 & 0xffffffff;
-      // is equal to:
-      // uint32_t recvFract = (double)(refMillis)/0.00000023283064365386963;
-
-      // Received what is probably an NTP packet. Read it in and verify
-      // that it's legit.
-      NtpPacket packet;
-      timeServerPort_.read((char*)&packet, NtpPacket::PACKET_SIZE);
-      // TODO: verify packet.
-
-      // Populate response.
-      packet.swapEndian();
-      packet.leapIndicator(0);
-      packet.versionNumber(4);
-      packet.mode(4);
-      packet.stratum = 1; // >1 will lead to misinterpretation of refId
-      packet.poll = 10; // 6-10 per RFC 5905.
-      packet.precision = -21; // ~0.5 microsecond precision.
-      packet.rootDelay = 100 * (0xFFFF / 1000); //~100 milliseconds
-      packet.rootDispersion = 50 * (0xFFFF / 1000);; //~50 millisecond dispersion
-      packet.referenceId[0] = 'G';
-      packet.referenceId[1] = 'P';
-      packet.referenceId[2] = 'S';
-      packet.referenceId[3] = 0;
-      packet.referenceTimestampSeconds = recvSecs;
-      packet.referenceTimestampFraction = 0;  // the "click" of the GPS
-      packet.originTimestampSeconds = packet.transmitTimestampSeconds;
-      packet.originTimestampFraction = packet.transmitTimestampFraction;
-      packet.receiveTimestampSeconds = recvSecs;
-      packet.receiveTimestampFraction = recvFract;
-
-      // ...and the transmit time.
-      // the latency has been between 135 and 175 microseconds in internal testing, so we hardcode 150
-      constexpr uint32_t latency = (150*1000) / (1LL << 32);
-      uint32_t transFract = recvFract + latency;
-      if (recvFract>transFract){
-        recvSecs++; //overflow
-      }
-      packet.transmitTimestampSeconds = recvSecs;
-      packet.transmitTimestampFraction = transFract;
-
-      // Now transmit the response to the client.
-      packet.swapEndian();
-
-      timeServerPort_.beginPacket(timeServerPort_.remoteIP(), timeServerPort_.remotePort());
-      timeServerPort_.write((const uint8_t *)packet.packet(), NtpPacket::PACKET_SIZE);
-      timeServerPort_.endPacket();
-
-      processed = true;
-  }
-
-  return processed;
+void NtpServer::poll()
+{
+  if (!polled() || !source_) { return; }   // ESP32 answers in NtpRecv()
+  NtpTimeBase base;
+  uint32_t utc, boundaryUs;
+  if (!source_(&base, &utc, &boundaryUs)) { dropRequest(); return; }
+  if (processOneRequest(utc, boundaryUs, base) && sent_) { sent_(base); }
 }

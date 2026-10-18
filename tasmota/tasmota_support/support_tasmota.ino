@@ -1055,6 +1055,9 @@ bool MqttShowSensor(bool call_show_sensor) {
   }
 
   GetSensorValues();
+#ifdef USE_NTP_SERVER
+  RtcResponseAppendTimeSrc();                    // "TimeSrc"
+#endif  // USE_NTP_SERVER
 
 #ifndef FIRMWARE_MINIMAL
   if (TasmotaGlobal.global_update && Settings->flag.mqtt_add_global_info) {  // SetOption2 (MQTT) Add global temperature/humidity/pressure info to JSON sensor message

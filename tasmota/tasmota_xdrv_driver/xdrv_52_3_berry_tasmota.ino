@@ -204,6 +204,21 @@ extern "C" {
     be_pushint(vm, Rtc.utc_time);
     be_return(vm);
   }
+#ifdef USE_NTP_SERVER
+  // Berry: tasmota.time_source() -> int, bits 0-3 source, 4-7 phase, 8-12 stratum, 13-15 GPS fix, 16-17 PPS on/locked
+  int32_t l_time_source(struct bvm *vm);
+  int32_t l_time_source(struct bvm *vm) {
+    be_pushint(vm, RtcTimeSourcePacked());
+    be_return(vm);
+  }
+
+  // Berry: tasmota.time_server() -> string, upstream NTP server last used, "" if none
+  int32_t l_time_server(struct bvm *vm);
+  int32_t l_time_server(struct bvm *vm) {
+    be_pushstring(vm, wifi_ntp_server);
+    be_return(vm);
+  }
+#endif  // USE_NTP_SERVER
 
   // Berry: tasmota.memory() -> map
   //
