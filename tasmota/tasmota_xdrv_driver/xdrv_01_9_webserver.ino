@@ -652,6 +652,7 @@ void WebServer_removeRoute(const char * prefix, uint8_t method = HTTP_ANY) {
 
 // Always listens to all interfaces, so we don't need an IP address anymore
 void StartWebserver(int type) {
+  if (HTTP_OFF == type) { return; }             // type = Settings->webserver, 0 = web server off
   if (!Settings->web_refresh) { Settings->web_refresh = HTTP_REFRESH_TIME; }
   if (!Web.state) {
 
@@ -769,7 +770,7 @@ void WifiManagerBegin(bool reset_only) {
 
 void PollDnsWebserver(void) {
   if (DnsServer) { DnsServer->processNextRequest(); }
-  if (Webserver) { Webserver->handleClient(); }
+  if (Webserver && Web.state) { Webserver->handleClient(); }   // handleClient() costs a delay(1)
 }
 
 /*********************************************************************************************/
