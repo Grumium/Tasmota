@@ -78,6 +78,7 @@ be_extern_native_module(MI32);
 be_extern_native_module(BLE);
 be_extern_native_module(BLEAdv);
 be_extern_native_module(BLECtl);
+be_extern_native_module(espnow);
 #ifdef USE_OPC
 be_extern_native_module(opc);
 #endif // USE_OPC
@@ -236,6 +237,9 @@ BERRY_LOCAL const bntvmodule_t* const be_module_table[] = {
 #ifdef USE_BLE_CTL
     &be_native_module(BLECtl),
 #endif // USE_BLE_CTL
+#ifdef USE_BERRY_ESPNOW
+    &be_native_module(espnow),
+#endif // USE_BERRY_ESPNOW
 #ifdef USE_OPC
     &be_native_module(opc),
 #endif // USE_OPC

@@ -17,6 +17,10 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifdef USE_BERRY_ESPNOW
+extern bool BerryEspnowWifiHold;
+#endif
+
 #if defined(ESP32) && defined(USE_WEBCLIENT_HTTPS)
   #include "HttpClientLight.h"
 #endif
@@ -1707,6 +1711,9 @@ void Every250mSeconds(void)
     }
     break;
   case 2:                                                 // Every x.5 second
+#ifdef USE_BERRY_ESPNOW
+    if (BerryEspnowWifiHold) { break; }                   // ESP-NOW holds WiFi, RAM only
+#endif
     if (Settings->flag4.network_wifi) {
       WifiCheck(TasmotaGlobal.wifi_state_flag);
       TasmotaGlobal.wifi_state_flag = WIFI_RESTART;

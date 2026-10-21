@@ -77,12 +77,17 @@ static void be_ctl_event(uint8_t type, int32_t value) {
 
 class BleCtlServerCb : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *srv, NimBLEConnInfo &info) override {
+    // One central at a time: a stale earlier link (BlueZ retry) gives way to the newest.
+    if (be_ctl.conn != BLE_HS_CONN_HANDLE_NONE && be_ctl.conn != info.getConnHandle()) {
+      srv->disconnect(be_ctl.conn);
+    }
     be_ctl.conn = info.getConnHandle();
     be_ctl.mtu = 23;
     be_ctl.adv_on = false;      // the stack stops advertising on connect
     be_ctl_event(1, be_ctl.conn);
   }
   void onDisconnect(NimBLEServer *srv, NimBLEConnInfo &info, int reason) override {
+    if (info.getConnHandle() != be_ctl.conn) { return; }   // the replaced stale link
     be_ctl.conn = BLE_HS_CONN_HANDLE_NONE;
     be_ctl.mtu = 23;
     be_ctl_event(2, reason);

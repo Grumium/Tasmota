@@ -49,7 +49,11 @@ extern "C" {
   // The first 32 bits must be a JMP instruction to the start of the program
   //
   // `ULP.run() -> nil`
+  // Set once a ULP program runs; without one the ULP wakeup only fires spuriously.
+  static bbool be_ulp_started = bfalse;
+
   void be_ULP_run(int32_t entry) {
+    be_ulp_started = btrue;
 #if defined(CONFIG_IDF_TARGET_ESP32)
     ulp_run(entry);       // entry point should be at the beginning of program
 #elif defined(CONFIG_ULP_COPROC_TYPE_RISCV) // S2 or S3
@@ -210,7 +214,7 @@ extern "C" {
     // A ULP reading a GPIO needs this domain, so keep it powered unless ext1
     // took over the wakeup.
   #if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) && SOC_PM_SUPPORT_EXT1_WAKEUP
-    if (!(be_ulp_ext1_mask && be_ulp_ext1_pd_periph))
+    if (be_ulp_started && !(be_ulp_ext1_mask && be_ulp_ext1_pd_periph))
   #endif
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #endif
@@ -237,7 +241,9 @@ extern "C" {
     // timer was set. ext1 alone is a sufficient wake source.
     if (!(be_ulp_ext1_mask && be_ulp_ext1_pd_periph))
 #endif
-    esp_sleep_enable_ulp_wakeup();
+    // No program running (e.g. `ulpsleep magnet ignore`, timer only): arming it woke the
+    // device ~2 s after falling asleep, measured 2026-10-22.
+    if (be_ulp_started) { esp_sleep_enable_ulp_wakeup(); }
     esp_deep_sleep_start();
   }
 
