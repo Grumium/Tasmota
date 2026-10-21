@@ -39,7 +39,7 @@ extern int be_espnow_mac(bvm *vm);
 /* @const_object_info_begin
 module espnow (scope: global) {
   begin,       ctype_func(be_espnow_begin)
-  end,         ctype_func(be_espnow_end)
+  stop,        ctype_func(be_espnow_end)
   wifi_hold,   ctype_func(be_espnow_wifi_hold)
   channel,     ctype_func(be_espnow_channel)
   set_channel, ctype_func(be_espnow_set_channel)

@@ -43,6 +43,7 @@ struct EspnowTx { uint8_t dst[6]; bool ok; };
 
 static struct {
   bool up = false;
+  wifi_ps_type_t ps = WIFI_PS_MIN_MODEM;   // restored by end()
   SemaphoreHandle_t lock = nullptr;
   std::deque<EspnowRx> rx;
   std::deque<EspnowTx> tx;
@@ -138,6 +139,9 @@ extern "C" {
       }
       esp_now_register_recv_cb(BeEn::be_en_recv_cb);
       esp_now_register_send_cb(BeEn::be_en_send_cb);
+      // A dozing station misses broadcasts: 512 of 1000 arrived with modem sleep (2026-10-22).
+      esp_wifi_get_ps(&be_en.ps);
+      esp_wifi_set_ps(WIFI_PS_NONE);
       be_en.up = true;
     }
     BeEn::be_en_ensure_peer(ESPNOW_BCAST);
@@ -149,6 +153,7 @@ extern "C" {
       esp_now_unregister_recv_cb();
       esp_now_unregister_send_cb();
       esp_now_deinit();
+      esp_wifi_set_ps(be_en.ps);
       be_en.up = false;
     }
     BeEn::be_en_hold(false);
