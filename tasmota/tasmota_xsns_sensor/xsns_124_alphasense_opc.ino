@@ -139,6 +139,7 @@ const char kOpcEmptyCell[] PROGMEM = "<td></td><td style='text-align:right'>-</t
 #endif
 
 static const uint8_t kMaxSpiRetries = 10; 
+#define OPC_FLUSH_BYTES 100
 
 struct OPC_T {
   uint16_t mode, setmode;
@@ -575,6 +576,15 @@ bool OPCHandleData(uint8_t reg, uint8_t cmd, uint8_t count, uint8_t* bytes)
   }
   if (!ok) {
     AddLog(LOG_LEVEL_ERROR, PSTR("%s: Unable to read reg 0x%02X"), D_CMND_OPC, reg);
+    // The sensor may still consider a transfer open: clock it out with CS low
+    {
+      SpiGuard spi;
+      for (uint32_t i = 0; i < OPC_FLUSH_BYTES; i++) {
+        SPI.transfer(0x00);
+        delayMicroseconds(100);
+      }
+    }
+    delay(100);
     OPC.setmode |= OPC_OVERRIDE;        // Re-Init erzwingen
     return false;
   }
