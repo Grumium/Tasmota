@@ -234,7 +234,7 @@ WiFiUDP PortUdp;                            // UDP Syslog and Alexa
     CONFIG_IDF_TARGET_ESP32S2 ||            // support USB via USBCDC
     CONFIG_IDF_TARGET_ESP32S3               // support USB via HWCDC using JTAG interface or USBCDC
 */
-#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
 
 //#if CONFIG_TINYUSB_CDC_ENABLED              // This define is not recognized here so use USE_USB_CDC_CONSOLE
 #ifdef USE_USB_CDC_CONSOLE
@@ -517,7 +517,7 @@ void setup(void) {
   }
 
 #ifdef ESP32
-#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
 #ifdef USE_USB_CDC_CONSOLE
 
   bool is_connected_to_USB = false;
@@ -586,6 +586,7 @@ void setup(void) {
 #endif  // ESP32
 
   // Ready for AddLog use
+  HEAP_MAP(PSTR("setup"))
 
 //  AddLog(LOG_LEVEL_INFO, PSTR("ADR: Settings %p, Log %p"), Settings, TasmotaGlobal.log_buffer);
 #ifdef ESP32
@@ -608,6 +609,7 @@ void setup(void) {
   SettingsLoad();
   SettingsDelta();
   SettingsMinimum();                           // Set life-saving parameters if out-of-range due to reconfig Settings Area
+  HEAP_MAP(PSTR("settings"))
 
   OsWatchInit();
 
@@ -723,9 +725,11 @@ void setup(void) {
   if (!TasmotaGlobal.no_autoexec) {
     BerryInit();                 // Load preinit.be
   }
+  HEAP_MAP(PSTR("berry"))
 #endif  // USE_BERRY
 
   XdrvXsnsCall(FUNC_PRE_INIT);   // FUNC_PRE_INIT
+  HEAP_MAP(PSTR("preinit"))
 
   TasmotaGlobal.init_state = INIT_GPIOS;
 
@@ -745,6 +749,7 @@ void setup(void) {
 #endif  // ESP8266
 
   XdrvXsnsCall(FUNC_INIT);       // FUNC_INIT
+  HEAP_MAP(PSTR("init"))
 #ifdef USE_SCRIPT
   if (bitRead(Settings->rule_enabled, 0)) Run_Scripter(">BS",3,0);
 #endif  // USE_SCRIPT

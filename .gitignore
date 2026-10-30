@@ -87,3 +87,7 @@ TODO-ulp-ext1-wakeup.md
 
 ## Qemu test folder
 tasmota-qemu
+
+# Local ESP-IDF build files, not tracked
+/sdkconfig.defaults
+/CMakeLists.txt
