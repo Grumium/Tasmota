@@ -2,6 +2,7 @@
   xsns_60_GPS.ino - GPS UBLOX support for Tasmota
 
   Copyright (C) 2021  Theo Arends, Christian Baars and Adrian Scillato
+  Copyright (C) 2026  Jan-David Förster
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -80,10 +81,10 @@ The serial pins are GPS_RX and GPS_TX, no further installation steps needed. To 
   only TELE message
 
 + sensor60 9
-  start NTP-server
+  start NTP-server (GPS_NTP_SERVER)
 
 + sensor60 10
-  deactivate NTP-server
+  deactivate NTP-server (GPS_NTP_SERVER)
 
 + sensor60 11
   force update of Tasmota-system-UTC with every new GPS-time-message
@@ -99,6 +100,36 @@ The serial pins are GPS_RX and GPS_TX, no further installation steps needed. To 
 
 + sensor60 15
   pause virtual serial port over TCP
+
++ sensor60 18 (GPS_NTP_SERVER)
+  keep position and velocity while the NTP server runs (without PPS: more jitter)
+
++ sensor60 19 (GPS_NTP_SERVER)
+  pure NTP-mode, stop position and velocity (default without a PPS pin)
+
+## Commands
+
+Without #define GPS_NTP_SERVER the GPS sets the system time in whole seconds from
+NAV-TIMEUTC, at the first valid time and hourly, and there is no NTP server; only
+GpsReset is available.
+
++ GpsNtpServer 0|1 (GPS_NTP_SERVER)
+  0 = off, 1 = on. Kept in the settings.
+
++ GpsPps 0|1 (GPS_NTP_SERVER)
+  0 = ignore the PPS edge, 1 = use it (default). Kept in the settings.
+
++ GpsReset 0|1|2
+  Restarts the receiver's GNSS part, its settings stay: 0 = hot (fix in seconds),
+  1 = warm (about half a minute), 2 = cold (minutes). With GPS_NTP_SERVER the
+  pulse is ignored until the next fix.
+
+## PPS
+
+With GPIO_GPS_PPS set, the pulse marks the start of the second; the serial
+message only says which second it is. Without a fix the pulse keeps running
+(UBX-TIM-TP says whether it is GNSS locked) and the server answers at a lower
+stratum instead of going quiet.
 
 ## Rules examples for SSD1306 32x128
 
@@ -130,7 +161,27 @@ const char kUBXTypes[] PROGMEM = "UBX";
 
 #define UBX_SERIAL_BUFFER_SIZE 256
 #define UBX_TCP_PORT           1234
-#define NTP_MILLIS_OFFSET      50              // estimated latency in milliseconds
+
+#ifdef USE_NTP_SERVER
+#define UBX_PPS_MAX_AGE        850             // Max ms from PPS edge to its message
+#define UBX_PPS_MIN_AGE        5               // Min ms from PPS edge to its message
+#define UBX_MSG_FRESH_MS       250             // Max ms GPS time and arrival may step apart; more = old message from the UART buffer
+#define UBX_MSG_STREAK         12              // Messages on time before message timing is used (UART buffer holds ~9)
+#define UBX_NAMED_EDGE_QUIET_MS 5000           // ms without time messages before PPS runs alone, counting the seconds
+#define UBX_PPS_SETTLE         3               // Good PPS edges in a row before use
+#define UBX_PPS_SPACING_TOL    500             // Max us a PPS edge may deviate from whole seconds
+#define UBX_PPS_MAX_SKIP       10              // Max missed PPS edges
+#define UBX_DRIFT_SPAN_HALFLIFE 1200           // Drift parameters, s (see DriftEstParams)
+#define UBX_DRIFT_SPAN_MIN        60
+#define UBX_DRIFT_WINDOW         120
+#define UBX_DRIFT_MOVED_PPB     1000
+// Drift parameters for GPS PPS
+const DriftEstParams UBXDriftParams = { 60, 50000, 0, 1, UBX_DRIFT_WINDOW, UBX_DRIFT_SPAN_MIN,
+                                        UBX_DRIFT_SPAN_HALFLIFE, UBX_DRIFT_MOVED_PPB, RTC_DRIFT_RESIDUAL_PPB };
+
+#define UBX_TIM_TP_MISSED      3               // Missed TIM-TP messages before its status is dropped
+#define UBX_TACC_NO_FIX        4000            // ns: with NAV-STATUS off, a time accuracy (tAcc) below this counts as fix
+#endif  // USE_NTP_SERVER
 
 /********************************************************************************************\
 | *globals
@@ -169,6 +220,18 @@ const char UBLOX_INIT[] PROGMEM = {
   //  0xB5,0x62,0x06,0x08,0x06,0x00,0xD0,0x07,0x01,0x00,0x01,0x00,0xED,0xBD //(0.5Hz)
 };
 
+#ifdef USE_NTP_SERVER
+// Sent at every init when a PPS pin is set (a receiver reset clears it). By default there is no pulse
+// without fix; here it runs without fix too, and UBX-TIM-TP says whether it is locked to GNSS
+const char UBLOX_INIT_PPS[] PROGMEM = {
+  0xB5,0x62,0x06,0x01,0x08,0x00,0x0D,0x01,0x00,0x01,0x00,0x00,0x00,0x00,0x1E,0x17, // TIM-TP on
+  // CFG-TP5: 1 Hz, 100 ms locked and unlocked, cable delay 50 ns, UTC grid, rising edge
+  0xB5,0x62,0x06,0x31,0x20,0x00,0x00,0x00,0x00,0x00,0x32,0x00,0x00,0x00,0x40,0x42,
+  0x0F,0x00,0x40,0x42,0x0F,0x00,0xA0,0x86,0x01,0x00,0xA0,0x86,0x01,0x00,0x00,0x00,
+  0x00,0x00,0x77,0x00,0x00,0x00,0x70,0x7F
+};
+#endif  // USE_NTP_SERVER
+
 char       UBX_name[4];
 
 struct UBX_t {
@@ -176,6 +239,9 @@ struct UBX_t {
   const char NAV_POSLLH_HEADER[2] = { 0x01, 0x02 };
   const char NAV_STATUS_HEADER[2] = { 0x01, 0x03 };
   const char NAV_TIME_HEADER[2]   = { 0x01, 0x21 };
+#ifdef USE_NTP_SERVER
+  const char TIM_TP_HEADER[2]     = { 0x0D, 0x01 };
+#endif  // USE_NTP_SERVER
 #ifdef USE_GPS_VELOCITY
   const char NAV_VEL_HEADER[2]    = { 0x01, 0x12 };
 #endif  // USE_GPS_VELOCITY
@@ -240,12 +306,34 @@ struct UBX_t {
     uint8_t min;               // min
     uint8_t sec;               // s
     struct {
-      uint8_t UTC:1;
-      uint8_t WKN:1;           // week number
       uint8_t TOW:1;           // time of week
-      uint8_t padding:5;
+      uint8_t WKN:1;           // week number
+      uint8_t UTC:1;           // leap seconds known
+      uint8_t reserved:1;
+      uint8_t utcStandard:4;
     } valid;
   };
+
+#ifdef USE_NTP_SERVER
+  struct TIM_TP {
+    uint8_t cls;               // 0x0D
+    uint8_t id;                // 0x01
+    uint16_t len;              // 16 bytes
+    uint32_t towMS;            // ms, time pulse time of week
+    uint32_t towSubMS;         // 2^-32 ms
+    int32_t qErr;              // ps, quantization error of the pulse
+    uint16_t week;             // time pulse week number
+    struct {
+      uint8_t timeBase:1;      //
+      uint8_t utc:1;           //
+      uint8_t raim:2;          //
+      uint8_t qErrInvalid:1;   // qErr not valid
+      uint8_t TpNotLocked:1;   // not on M9, it stops sending the message
+      uint8_t padding:2;
+    } flags;
+    uint8_t refInfo;           //
+  };
+#endif  // USE_NTP_SERVER
 
 #ifdef USE_GPS_VELOCITY
   struct NAV_VEL {
@@ -275,14 +363,31 @@ struct UBX_t {
   };
 
   struct {
-    uint32_t last_iTOW;
     int32_t last_alt;
     uint32_t last_hAcc;
     uint32_t last_vAcc;
     uint8_t gpsFix;
     uint8_t non_empty_loops;   // in case of an unintended reset of the GPS, the serial interface will get flooded with NMEA
     uint16_t log_interval;     // in tenth of seconds
-    int32_t timeOffset;        // roughly computed offset millis() - iTOW
+#ifdef USE_NTP_SERVER
+    uint32_t last_iTOW;        // iTOW of the previous NAV-TIMEUTC
+    uint32_t last_msg_millis;  // millis() of its arrival
+    uint32_t ppsCount;         // Number of PPS edges
+    uint32_t ppsPrevMicros;    // micros() of the previous PPS edge
+    uint32_t ppsPrevCount;     // ppsCount at ppsPrevMicros
+    uint32_t ppsEdgeMicros;    // micros() of the last good PPS edge
+    uint32_t ppsEdgeMillis;    // millis() of the same edge
+    uint32_t ppsEdgeCount;     // ppsCount of the same edge
+    uint32_t timTpMillis;      // millis() of the last UBX-TIM-TP
+    uint32_t boundSecond;      // PPS without messages: UTC second given to the edge at boundCount, 0 = none
+    uint32_t boundCount;       // ppsCount of that edge
+    uint32_t pairKey;          // Message second minus ppsCount; constant while messages and edges stay paired
+    DriftEst drift;            // Crystal drift against PPS
+    uint16_t measRate;         // ms between measurements (8-bit and 16-bit fields last: no padding)
+    uint8_t  msgStreak;        // Messages on time, max UBX_MSG_STREAK
+    uint8_t  carryMismatch;    // PPS lost: messages in a row whose second differs from the clock's
+    uint8_t  ppsGood;          // Good edges in a row, max UBX_PPS_SETTLE
+#endif  // USE_NTP_SERVER
   } state;
 
   struct {
@@ -294,6 +399,17 @@ struct UBX_t {
     // uint32_t blockedNTP:1;
     uint32_t forceUTCupdate:1;
     uint32_t runningVPort:1;
+#ifdef USE_NTP_SERVER
+    uint32_t hasPPS:1;         // PPS pin configured
+    uint32_t ppsLocked:1;      // Last message was timed by a PPS edge
+    uint32_t keepPosition:1;   // Keep position/velocity messages while NTP runs
+    uint32_t forcePosition:1;  // keepPosition set by command
+    uint32_t hasTimTp:1;       // Receiver sends UBX-TIM-TP
+    uint32_t tpFree:1;         // Pulse not locked to GNSS (TIM-TP flag TpNotLocked)
+    uint32_t tpAligned:1;      // PPS was on the GNSS second since the last reset
+#else
+    uint32_t holdsTime:1;      // GPS set the time and blocks upstream NTP
+#endif  // USE_NTP_SERVER
     // TODO: more to come
   } mode;
 
@@ -301,6 +417,9 @@ struct UBX_t {
     NAV_POSLLH navPosllh;
     NAV_STATUS navStatus;
     NAV_TIME_UTC navTime;
+#ifdef USE_NTP_SERVER
+    TIM_TP timTp;
+#endif  // USE_NTP_SERVER
 #ifdef USE_GPS_VELOCITY
     NAV_VEL navVel;
 #endif  // USE_GPS_VELOCITY
@@ -319,6 +438,9 @@ enum UBXMsgType {
   MT_NAV_POSLLH,
   MT_NAV_STATUS,
   MT_NAV_TIME,
+#ifdef USE_NTP_SERVER
+  MT_TIM_TP,
+#endif  // USE_NTP_SERVER
 #ifdef USE_GPS_VELOCITY
   MT_NAV_VEL,
 #endif  // USE_GPS_VELOCITY
@@ -330,7 +452,9 @@ FLOG *Flog = nullptr;
 #endif  // USE_FLOG
 TasmotaSerial *UBXSerial;
 
+#ifdef USE_NTP_SERVER
 NtpServer timeServer(PortUdp);
+#endif  // USE_NTP_SERVER
 
 WiFiServer vPortServer(UBX_TCP_PORT);
 WiFiClient vPortClient;
@@ -354,11 +478,32 @@ bool UBXcompareMsgHeader(const char* msgHeader)
   return ptr[0] == msgHeader[0] && ptr[1] == msgHeader[1];
 }
 
+// Send a UBX frame msg[0..len-1] followed by its checksum
+void UBXsendChecked(const uint8_t* msg, uint32_t len)
+{
+  uint8_t ck_a = 0, ck_b = 0;
+  for (uint32_t i = 2; i < len; i++) {
+    ck_a += msg[i];
+    ck_b += ck_a;
+  }
+  UBXSerial->write(msg, len);
+  UBXSerial->write(ck_a);
+  UBXSerial->write(ck_b);
+}
+
 void UBXinitCFG(void)
 {
   for (uint32_t i = 0; i < sizeof(UBLOX_INIT); i++) {
     UBXSerial->write( pgm_read_byte(UBLOX_INIT+i) );
   }
+#ifdef USE_NTP_SERVER
+  if (UBX.mode.hasPPS) {
+    for (uint32_t i = 0; i < sizeof(UBLOX_INIT_PPS); i++) {
+      UBXSerial->write( pgm_read_byte(UBLOX_INIT_PPS+i) );
+    }
+    UBX.mode.hasTimTp = 0;              // Wait for TIM-TP with the new config
+  }
+#endif  // USE_NTP_SERVER
   DEBUG_SENSOR_LOG(PSTR("UBX: turn off NMEA"));
 }
 
@@ -372,6 +517,145 @@ void UBXsendCFGLine(uint8_t _line)
 }
 
 /********************************************************************************************/
+
+#ifdef USE_NTP_SERVER
+volatile uint32_t UBXppsMicros = 0;
+volatile uint32_t UBXppsCount = 0;
+
+static void IRAM_ATTR UBXppsIsr(void) {
+  UBXppsMicros = micros();
+  UBXppsCount++;
+}
+
+bool UBXHasPositionFix(void)
+{
+  return (UBX.state.gpsFix > 1) && (UBX.state.gpsFix != 5);
+}
+
+uint8_t UBXTimeSourceFix(void)
+{
+  return UBX.mode.init ? (UBX.state.gpsFix & 0x07) : 7;
+}
+
+bool UBXPpsExpected(void)
+{
+  return UBX.mode.init && UBX.mode.hasPPS && !Settings->sbflag1.gps_pps_off;
+}
+
+uint8_t UBXTimeSourcePps(void)
+{
+  if (!UBX.mode.init) { return 0; }
+  return (UBXPpsExpected() ? 1 : 0) | (UBX.mode.ppsLocked ? 2 : 0);
+}
+
+bool UBXTimTpFresh(void)
+{
+  if (!UBX.mode.hasTimTp) { return false; }
+  uint32_t interval = (UBX.state.measRate > 1000) ? UBX.state.measRate : 1000;
+  return (millis() - UBX.state.timTpMillis) < (interval * UBX_TIM_TP_MISSED);
+}
+
+bool UBXPulseSteered(void)
+{
+  return UBXTimTpFresh() && !UBX.mode.tpFree;
+}
+
+// New PPS edge: the edge marks when a second starts, the GPS message says which second it is
+void UBXHandlePPS(void)
+{
+  if (!UBXPpsExpected()) { return; }
+  uint32_t edge = UBXppsMicros;
+  uint32_t count = UBXppsCount;
+  if (edge != UBXppsMicros) { return; }          // New edge during the read
+  if (count == UBX.state.ppsCount) { return; }   // No new edge
+  UBX.state.ppsCount = count;
+
+  // Ignore an edge seen late (e.g. during a flash write)
+  uint32_t spacing = edge - UBX.state.ppsPrevMicros;
+  uint32_t pulses = count - UBX.state.ppsPrevCount;
+  bool spaced_right = UBX.state.ppsPrevMicros &&
+                      RtcEdgeSpacedRight(spacing, pulses, Rtc.drift_ppb, UBX_PPS_MAX_SKIP, UBX_PPS_SPACING_TOL);
+  UBX.state.ppsPrevMicros = edge;
+  UBX.state.ppsPrevCount = count;
+  if (!spaced_right) {
+    UBX.state.ppsGood = 0;
+    return;
+  }
+  if (UBX.state.ppsGood < UBX_PPS_SETTLE) { UBX.state.ppsGood++; return; }
+
+  uint32_t now_ms = millis();
+  uint32_t age_us = micros() - edge;
+  if (age_us > 1000000) { return; }              // Too old
+  uint32_t prev_edge = UBX.state.ppsEdgeMicros;
+  UBX.state.ppsEdgeMicros = edge;
+  UBX.state.ppsEdgeCount = count;
+  UBX.state.ppsEdgeMillis = now_ms - (age_us / 1000);
+
+  DEBUG_SENSOR_LOG(PSTR("UBX: EDGE pc=%u eus=%u ems=%u age=%u fix=%d ppb=%d"),
+    UBX.state.ppsCount, edge, UBX.state.ppsEdgeMillis, age_us, UBX.state.gpsFix, Rtc.drift_ppb);
+
+  if (!UBX.mode.ppsLocked) {
+    UBX.mode.ppsLocked = 1;
+    AddLog(LOG_LEVEL_INFO, PSTR("UBX: PPS locked"));
+  }
+  UBXMeasureDrift(edge - prev_edge);
+  UBXPublishNamedEdge();
+}
+
+// Set the clock from a PPS edge. named_elsewhere: the second's number came from the clock, not GPS
+bool UBXPublishEdge(uint32_t second, uint8_t stratum, bool named_elsewhere)
+{
+  return RtcSetBoundary(second, UBX.state.ppsEdgeMillis, UBX.state.ppsEdgeMicros,
+                        stratum, 0, RTC_PHASE_EDGE, true, named_elsewhere);
+}
+
+// PPS without GPS time messages: take the second's number once from the clock (edge within
+// 250 ms of the tick), then count edges
+void UBXPublishNamedEdge(void)
+{
+  if (UBX.state.last_msg_millis &&
+      ((millis() - UBX.state.last_msg_millis) < UBX_NAMED_EDGE_QUIET_MS)) { return; }
+  if (Rtc.stratum > RTC_STRATUM_CHIP) { return; }              // No time yet
+  if (RTC_PHASE_COLD == Rtc.phase_source) { return; }          // Wait for the RTC chip
+  if ((UBX.state.ppsGood < UBX_PPS_SETTLE) || !UBX.mode.tpAligned) { return; }   // PPS not aligned after a receiver reset
+
+  uint32_t since = UBX.state.ppsEdgeMillis - Rtc.millis;
+  if (since > (RTC_TICK_MAX_CATCHUP * 1000)) { return; }       // Too old
+  uint32_t whole = (since + 500) / 1000;
+  int32_t in_second = (int32_t)since - (int32_t)(whole * 1000);  // -500..+500 ms
+  if (abs(in_second) > 250) { return; }                        // Not near a whole second
+
+  uint32_t names = Rtc.utc_time + whole;
+  uint32_t expected = UBX.state.boundSecond + (UBX.state.ppsCount - UBX.state.boundCount);
+
+  if (!UBX.state.boundSecond || (expected != names)) {
+    UBX.state.boundSecond = names;
+    UBX.state.boundCount = UBX.state.ppsCount;
+    DEBUG_SENSOR_LOG(PSTR("UBX: edge bound to %u (pc=%u in=%d ms)"),
+      names, UBX.state.ppsCount, (int32_t)in_second);
+    return;
+  }
+
+  UBXPublishEdge(expected, Rtc.stratum, true);
+}
+
+// ESP crystal drift against PPS from the step since the previous good edge. Positive = micros() runs fast
+void UBXMeasureDrift(uint32_t step_us)
+{
+  if (!UBX.state.drift.anchored) {
+    DriftAnchor(&UBX.state.drift);
+    return;
+  }
+  uint32_t step_secs = (step_us + 500000) / 1000000;      // Missed edges
+  if (DRIFT_RESTART == RtcDriftStep(RTC_DRIFT_SRC_PPS, &UBX.state.drift, &UBXDriftParams,
+                                    step_us, step_secs, Rtc.drift_ppb, nullptr)) { return; }
+
+  if (UBX.state.drift.secs < UBX_DRIFT_SPAN_MIN) { return; }
+  uint32_t period = (UBX.state.drift.secs < 300) ? 10 : 60;
+  if (0 != (UBX.state.drift.secs % period)) { return; }
+  RtcDriftPublish(RTC_DRIFT_SRC_PPS, &UBX.state.drift, &UBXDriftParams, nullptr);
+}
+#endif  // USE_NTP_SERVER
 
 void UBXDetect(void) {
   UBX.mode.init = 0;
@@ -388,6 +672,16 @@ void UBXDetect(void) {
 #ifdef ESP32
   AddLog(LOG_LEVEL_DEBUG, PSTR("UBX: Serial UART%d"), UBXSerial->getUart());
 #endif
+
+#ifdef USE_NTP_SERVER
+  if (PinUsed(GPIO_GPS_PPS)) {
+    pinMode(Pin(GPIO_GPS_PPS), INPUT);
+    attachInterrupt(digitalPinToInterrupt(Pin(GPIO_GPS_PPS)), UBXppsIsr, RISING);
+    UBX.mode.hasPPS = 1;
+    DEBUG_SENSOR_LOG(PSTR("UBX: PPS on GPIO%d"), Pin(GPIO_GPS_PPS));
+  }
+  timeServer.setSource(UBXNtpSource, RtcNtpSent);   // Before beginListening()
+#endif  // USE_NTP_SERVER
 
   UBXinitCFG();                 // turn off NMEA, only use "our" UBX-messages
   UBX.mode.init = 1;
@@ -456,6 +750,13 @@ uint32_t UBXprocessGPS()
           payloadSize = sizeof(UBX_t::NAV_TIME_UTC);
           DEBUG_SENSOR_LOG(PSTR("UBX: got NAV_TIME_UTC"));
         }
+#ifdef USE_NTP_SERVER
+        else if ( UBXcompareMsgHeader(UBX.TIM_TP_HEADER) ) {
+          currentMsgType = MT_TIM_TP;
+          payloadSize = sizeof(UBX_t::TIM_TP);
+          DEBUG_SENSOR_LOG(PSTR("UBX: got TIM_TP"));
+        }
+#endif  // USE_NTP_SERVER
 #ifdef USE_GPS_VELOCITY
         else if ( UBXcompareMsgHeader(UBX.NAV_VEL_HEADER) ) {
           currentMsgType = MT_NAV_VEL;
@@ -545,7 +846,7 @@ void UBXsendFooter(void)
 {
   Webserver->sendContent(F("</trkseg>\n</trk>\n</GPX>"));
   Webserver->sendContent("");
-  Rtc.user_time_entry = false; // we have blocked the main loop and want a new valid time
+  UBX.utc_time = 0;            // we have blocked the main loop and want a new valid time
 }
 
 /********************************************************************************************/
@@ -569,6 +870,9 @@ void UBXSetRate(uint16_t interval)
     measRate = 0xffff; // max. 65535 ms interval
   }
   UBX.Message.cfgRate.measRate = (uint16_t)measRate;
+#ifdef USE_NTP_SERVER
+  UBX.state.measRate = measRate;             // Used by UBXTimTpFresh()
+#endif  // USE_NTP_SERVER
   UBX.Message.cfgRate.navRate = 1;
   UBX.Message.cfgRate.timeRef = 1;
   UBXcalcChecksum(UBX.Message.cfgRate.CK, sizeof(UBX.Message.cfgRate)-sizeof(UBX.Message.cfgRate.CK));
@@ -581,6 +885,33 @@ void UBXSetRate(uint16_t interval)
   }
   UBX.state.log_interval = 10*interval;
 }
+
+#ifdef USE_NTP_SERVER
+bool UBXKeepPosition(void)
+{
+  return UBX.mode.forcePosition ? UBX.mode.keepPosition : (bool)UBX.mode.hasPPS;
+}
+
+void UBXPositionMessages(bool on)
+{
+  if (on) {
+#ifdef USE_GPS_VELOCITY
+    UBXsendCFGLine(11); //NAV-POSLLH on
+    UBXsendCFGLine(12); //NAV-STATUS on
+    UBXsendCFGLine(14); //NAV-VELNED on
+#else
+    UBXsendCFGLine(10); //NAV-POSLLH on
+    UBXsendCFGLine(11); //NAV-STATUS on
+#endif  // USE_GPS_VELOCITY
+  } else {
+    UBXsendCFGLine(7);  // NAV-POSLLH off
+    UBXsendCFGLine(8);  // NAV-STATUS off
+#ifdef USE_GPS_VELOCITY
+    UBXsendCFGLine(10); // NAV-VELNED off
+#endif  // USE_GPS_VELOCITY
+  }
+}
+#endif  // USE_NTP_SERVER
 
 void UBXSelectMode(uint16_t mode)
 {
@@ -620,22 +951,26 @@ void UBXSelectMode(uint16_t mode)
     case 8:
       UBX.mode.send_when_new = 0; // only TELE
       break;
+#ifdef USE_NTP_SERVER
     case 9:
-      if (!TasmotaGlobal.global_state.network_down && timeServer.beginListening()) {
+      if (!TasmotaGlobal.global_state.network_down) {
+        UBXListenNTP();
         UBX.mode.runningNTP = true;
+        Settings->sbflag1.gps_ntp_server = 1;
+        if (UBXKeepPosition()) { UBXPositionMessages(true); }
       }
       break;
     case 10:
       UBX.mode.runningNTP = false;
-#ifdef USE_GPS_VELOCITY
-      UBXsendCFGLine(11); //NAV-POSLLH on
-      UBXsendCFGLine(12); //NAV-STATUS on
-      UBXsendCFGLine(14); //NAV-VELNED on
-#else
-      UBXsendCFGLine(10); //NAV-POSLLH on
-      UBXsendCFGLine(11); //NAV-STATUS on
-#endif  // USE_GPS_VELOCITY
+      Settings->sbflag1.gps_ntp_server = 0;
+      RtcReleaseSource(RTC_STRATUM_GPS_FREE);
+      if (RtcNtpBoundBy(RTC_NTP_OWNER_GPS)) {
+        timeServer.stopListening();
+        RtcNtpRelease(RTC_NTP_OWNER_GPS);
+      }
+      UBXPositionMessages(true);
       break;
+#endif  // USE_NTP_SERVER
     case 11:
       UBX.mode.forceUTCupdate = true;
       break;
@@ -654,6 +989,18 @@ void UBXSelectMode(uint16_t mode)
       // vPortServer.stop(); // seems not to work reliably
       UBX.mode.runningVPort = 0;
       break;
+#ifdef USE_NTP_SERVER
+    case 18:
+      UBX.mode.keepPosition = 1;  // Keep position/velocity while NTP runs
+      UBX.mode.forcePosition = 1;
+      UBXPositionMessages(true);
+      break;
+    case 19:
+      UBX.mode.keepPosition = 0;  // Pure NTP mode, no position/velocity
+      UBX.mode.forcePosition = 1;
+      if (UBX.mode.runningNTP) { UBXPositionMessages(false); }
+      break;
+#endif  // USE_NTP_SERVER
     default:
       if (mode>1000 && mode <1066) {
         UBXSetRate(mode-1000); // set interval between measurements in seconds from 1 to 65
@@ -686,13 +1033,11 @@ bool UBXHandlePOSLLH()
     if (UBX.mode.send_when_new) {
       MqttPublishTeleperiodSensor();
     }
-    if (UBX.mode.runningNTP){ // after receiving pos-data at least once -> go to pure NTP-mode
-      UBXsendCFGLine(7);      // NAV-POSLLH off
-      UBXsendCFGLine(8);      // NAV-STATUS off
-#ifdef USE_GPS_VELOCITY
-      UBXsendCFGLine(10);     // NAV-VELNED off
-#endif  // USE_GPS_VELOCITY
+#ifdef USE_NTP_SERVER
+    if (UBX.mode.runningNTP && !UBXKeepPosition()){ // -> go to pure NTP-mode
+      UBXPositionMessages(false);
     }
+#endif  // USE_NTP_SERVER
     //UBX_LAT_LON_THRESHOLD = 20 * UBX.Message.navPosllh.hAcc;
     return true; // new position
   } else {
@@ -728,11 +1073,34 @@ void UBXHandleSTATUS()
 void UBXHandleTIME()
 {
   DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time: %u-%u-%u %u:%u:%u"), UBX.Message.navTime.year, UBX.Message.navTime.month ,UBX.Message.navTime.day,UBX.Message.navTime.hour,UBX.Message.navTime.min,UBX.Message.navTime.sec);
+#ifdef USE_NTP_SERVER
+  static int8_t utc_said = -1;
+  int8_t utc_now = UBX.Message.navTime.valid.UTC;
+  if (UBX.Message.navTime.valid.TOW && (utc_now != utc_said)) {
+    AddLog(LOG_LEVEL_INFO, PSTR("UBX: leap seconds %s"), utc_now ? PSTR("known, UTC valid")
+      : PSTR("unknown, time not used"));
+    utc_said = utc_now;
+  }
+  if (!utc_now) { UBX.mode.tpAligned = 0; }     // Receiver reset, PPS not aligned
+ // validUTC (bit 2): leap seconds known
  if ((UBX.Message.navTime.valid.UTC == 1) && (UBX.Message.navTime.year >= 2023)) {
-    UBX.state.timeOffset =  millis(); // iTOW%1000 should be 0 here, when NTP-server is enabled and in "pure mode"
+    uint32_t arrival = micros();  // iTOW%1000 should be 0 here, when NTP-server is enabled and in "pure mode"
+    if (!UBXKeepPosition()) {                     // NAV-STATUS is off: use tAcc as fix
+      bool solving = (UBX.Message.navTime.tAcc < UBX_TACC_NO_FIX);
+      if (solving != (UBX.state.gpsFix > 1)) {
+        UBX.state.gpsFix = solving ? 5 : 0;
+        DEBUG_SENSOR_LOG(PSTR("UBX: tAcc %u ns, fix %s"),
+          UBX.Message.navTime.tAcc, solving ? PSTR("acquired") : PSTR("lost"));
+      }
+    }
+    if ((UBX.state.gpsFix > 1) && (UBX.Message.navTime.tAcc < UBX_TACC_NO_FIX)) { UBX.mode.tpAligned = 1; }
     DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time is valid"));
     bool resync = (Rtc.utc_time > UBX.utc_time);  // Sync local time every hour
-    if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate || UBX.mode.runningNTP || resync) {
+    bool clock_unset = (Rtc.utc_time < START_VALID_TIME);
+    // Without the NTP server the GPS sets the clock hourly, unless a fresh upstream sync holds it
+    bool hourly = resync && !UBX.mode.runningNTP &&
+                  !(Rtc.from_upstream && ((TasmotaGlobal.uptime - Rtc.last_sync) <= RTC_SYNC_AGE_UPSTREAM));
+    if (UBX.mode.runningNTP || UBX.mode.forceUTCupdate || clock_unset || hourly) {
       TIME_T gpsTime;
       gpsTime.year = UBX.Message.navTime.year - 1970;
       gpsTime.month = UBX.Message.navTime.month;
@@ -741,16 +1109,144 @@ void UBXHandleTIME()
       gpsTime.minute = UBX.Message.navTime.min;
       gpsTime.second = UBX.Message.navTime.sec;
       UBX.rec_buffer.values.time = MakeTime(gpsTime);
-      if (UBX.mode.forceUTCupdate || (Rtc.user_time_entry == false) || resync) {
+      // The PPS edge belongs to this message if it came UBX_PPS_MIN_AGE..UBX_PPS_MAX_AGE ms before
+      bool edge_seen = (0 != UBX.state.ppsEdgeMicros);
+      int32_t edge_age = (int32_t)(arrival - UBX.state.ppsEdgeMicros) / 1000;
+      bool edge_matches = edge_seen &&
+                          (edge_age >= UBX_PPS_MIN_AGE) && (edge_age <= UBX_PPS_MAX_AGE);
+
+      // New message or an old one from the UART buffer? GPS time (iTOW) and arrival must advance alike
+      uint32_t itow = UBX.Message.navTime.iTOW;
+      uint32_t now_ms = millis();
+      int32_t itow_step = (int32_t)(itow - UBX.state.last_iTOW);
+      int32_t real_step = (int32_t)(now_ms - UBX.state.last_msg_millis);
+      bool rate_ok = (0 != UBX.state.last_iTOW) &&
+                     (abs(itow_step - real_step) < UBX_MSG_FRESH_MS);
+      if (rate_ok) {
+        if (UBX.state.msgStreak < UBX_MSG_STREAK) { UBX.state.msgStreak++; }
+      } else {
+        UBX.state.msgStreak = 0;
+      }
+      bool fresh_msg = rate_ok && (edge_seen || (UBX_MSG_STREAK == UBX.state.msgStreak));
+      UBX.state.last_iTOW = itow;
+      UBX.state.last_msg_millis = now_ms;
+      DEBUG_SENSOR_LOG(PSTR("UBX: MEAS pc=%u eus=%u ems=%u utc=%u itow=%u aus=%u "
+                                  "nano=%d tacc=%u lock=%d fix=%d ppb=%d"),
+        UBX.state.ppsCount, UBX.state.ppsEdgeMicros, UBX.state.ppsEdgeMillis,
+        UBX.rec_buffer.values.time, UBX.Message.navTime.iTOW, arrival,
+        UBX.Message.navTime.nano, UBX.Message.navTime.tAcc,
+        UBX.mode.ppsLocked, UBX.state.gpsFix, Rtc.drift_ppb);
+
+      // PPS locked to GNSS: TIM-TP if available, else a position fix
+      bool traceable = UBX.mode.hasTimTp ? UBXPulseSteered() : UBXHasPositionFix();
+
+      // Message second minus PPS count stays constant while messages and edges stay paired
+      uint32_t pair_key = UBX.rec_buffer.values.time - UBX.state.ppsEdgeCount;
+      bool pair_ok = (pair_key == UBX.state.pairKey);
+      if (edge_matches && !pair_ok) {
+        if (rate_ok) {
+          if (UBX.state.pairKey) {
+            DEBUG_SENSOR_LOG(PSTR("UBX: message re-paired with pulse, %d s"),
+              (int32_t)(pair_key - UBX.state.pairKey));
+          }
+          UBX.state.pairKey = pair_key;
+          pair_ok = true;
+        } else {
+          DEBUG_SENSOR_LOG(PSTR("UBX: late msg %u, no edge pc=%u, age %d ms"),
+            UBX.rec_buffer.values.time, UBX.state.ppsCount, edge_age);
+        }
+      }
+
+      bool published = false;
+      if (UBX.mode.ppsLocked && UBX.mode.tpAligned && edge_matches && pair_ok) {
+        published = UBXPublishEdge(UBX.rec_buffer.values.time,
+                                   traceable ? RTC_STRATUM_GPS : RTC_STRATUM_GPS_PPS, false);
+      }
+      // No matching PPS edge: keep the phase of the last edge and take only the second from the message;
+      // without a usable edge, time the second by the message's arrival
+      if (!published && !edge_matches && fresh_msg) {
+        uint8_t stratum = traceable ? RTC_STRATUM_GPS : RTC_STRATUM_GPS_FREE;
+        if (edge_seen && RtcPhaseGood()) {
+          int8_t named = RtcCarryNamed(UBX.rec_buffer.values.time, arrival, stratum,
+                                       (millis() - UBX.state.ppsEdgeMillis) / 1000, UBX.state.carryMismatch >= 4);
+          published = (named > 0);
+          if (named < 0) {
+            if (UBX.state.carryMismatch < 4) { UBX.state.carryMismatch++; }   // No wrap
+            DEBUG_SENSOR_LOG(PSTR("UBX: message %u not on the carried second"), UBX.rec_buffer.values.time);
+          } else if (published && UBX.state.carryMismatch >= 4) {
+            DEBUG_SENSOR_LOG(PSTR("UBX: carried second renamed to %u"), UBX.rec_buffer.values.time);
+          }
+          if (published) { UBX.state.carryMismatch = 0; }
+        } else {
+          uint32_t b_ms = millis(), b_us = arrival;
+          published = RtcSetBoundary(UBX.rec_buffer.values.time, b_ms, b_us, stratum, 2, RTC_PHASE_NONE, true);
+        }
+      } else if (!published) {
+        DEBUG_SENSOR_LOG(PSTR("UBX: no boundary this second, age %d"), edge_age);
+      }
+      if (UBX.mode.forceUTCupdate || clock_unset || resync) {
 //        AddLog(LOG_LEVEL_INFO, PSTR("UBX: UTC-Time is valid, set system time"));
         UBX.utc_time = UBX.rec_buffer.values.time + 3600;
-        Rtc.utc_time = UBX.rec_buffer.values.time;
-        RtcSync("UBX");
+        // Whole seconds only if the clock is not set, or hourly without the NTP server
+        if (published) {
+          RtcSynced("UBX");
+        } else if (!UBX.mode.ppsLocked && (fresh_msg || (hourly && rate_ok)) && (clock_unset || UBX.mode.forceUTCupdate || hourly)) {
+          RtcSync("UBX", UBX.rec_buffer.values.time,
+                  traceable ? RTC_STRATUM_GPS : RTC_STRATUM_GPS_FREE,
+                  RTC_PHASE_NONE, RTC_SYNC_AGE_GPS);
+        }
       }
-      Rtc.user_time_entry = true;
     }
   }
+#else
+  if ((UBX.Message.navTime.valid.UTC == 1) && (UBX.Message.navTime.year >= 2023)) {
+    DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time is valid"));
+    bool resync = (Rtc.utc_time > UBX.utc_time);  // Sync local time every hour
+    if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate || resync) {
+      TIME_T gpsTime;
+      gpsTime.year = UBX.Message.navTime.year - 1970;
+      gpsTime.month = UBX.Message.navTime.month;
+      gpsTime.day_of_month = UBX.Message.navTime.day;
+      gpsTime.hour = UBX.Message.navTime.hour;
+      gpsTime.minute = UBX.Message.navTime.min;
+      gpsTime.second = UBX.Message.navTime.sec;
+      UBX.rec_buffer.values.time = MakeTime(gpsTime);
+      UBX.utc_time = UBX.rec_buffer.values.time + 3600;
+      Rtc.utc_time = UBX.rec_buffer.values.time;
+      RtcSync("UBX");
+      Rtc.user_time_entry = true;
+      UBX.mode.holdsTime = 1;
+    }
+  }
+#endif  // USE_NTP_SERVER
 }
+
+#ifndef USE_NTP_SERVER
+#define UBX_TIME_HOLD_GRACE    120             // s past the hourly resync, above the 65 s max measurement interval
+// No GPS time for an hour: let upstream NTP set the time again until the GPS is back
+void UBXCheckTimeHeld(void)
+{
+  if (!UBX.mode.holdsTime || (Rtc.utc_time <= (UBX.utc_time + UBX_TIME_HOLD_GRACE))) { return; }
+  UBX.mode.holdsTime = 0;
+  Rtc.user_time_entry = false;
+  AddLog(LOG_LEVEL_INFO, PSTR("UBX: no GPS time for an hour, NTP sets the time"));
+}
+#endif  // USE_NTP_SERVER
+
+#ifdef USE_NTP_SERVER
+void UBXHandleTIMTP(void)
+{
+  UBX.mode.hasTimTp = 1;
+  UBX.state.timTpMillis = millis();
+  bool was_free = UBX.mode.tpFree;
+  UBX.mode.tpFree = UBX.Message.timTp.flags.TpNotLocked;
+  if (was_free != (bool)UBX.mode.tpFree) {
+    AddLog(LOG_LEVEL_INFO, PSTR("UBX: time pulse %s"),
+      UBX.mode.tpFree ? PSTR("free running") : PSTR("locked to GNSS"));
+  }
+  if (!UBX.mode.tpFree) { UBX.mode.tpAligned = 1; }
+}
+#endif  // USE_NTP_SERVER
 
 void UBXHandleOther(void)
 {
@@ -782,11 +1278,60 @@ void UBXLoop50msec(void)
       UBX.TCPbufSize = 0;
     }
   }
-  // handle NTP-server
-  if(!TasmotaGlobal.global_state.network_down && UBX.mode.runningNTP){
-    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset - NTP_MILLIS_OFFSET);
-  }
 }
+
+#ifdef USE_NTP_SERVER
+// Open NTP port 123 for the GPS server, unless already used. false = failed
+bool UBXListenNTP(void)
+{
+  if (RtcNtpBoundBy(RTC_NTP_OWNER_GPS) || !RtcNtpBind(RTC_NTP_OWNER_GPS)) { return true; }
+  if (timeServer.beginListening()) { return true; }
+  RtcNtpRelease(RTC_NTP_OWNER_GPS);
+  return false;
+}
+
+// Every 100 ms while enabled: takes port 123 as soon as the RTC chip NTP server frees it
+void UBXRestoreNTP(void)
+{
+  if (!Settings->sbflag1.gps_ntp_server || RtcNtpBoundBy(RTC_NTP_OWNER_GPS)) { return; }
+  if (TasmotaGlobal.global_state.network_down || !UBXListenNTP()) { return; }
+  if (UBX.mode.runningNTP) { return; }
+  UBX.mode.runningNTP = true;
+  if (UBXKeepPosition()) { UBXPositionMessages(true); }
+  AddLog(LOG_LEVEL_INFO, PSTR("UBX: NTP server restored"));
+}
+
+void UBXDropPPS(const char* why)
+{
+  if (!UBX.mode.ppsLocked) { return; }
+  UBX.mode.ppsLocked = 0;
+  UBX.state.ppsGood = 0;
+  UBX.state.drift.lostUptime = TasmotaGlobal.uptime;
+  AddLog(LOG_LEVEL_INFO, PSTR("UBX: PPS %s, using message time"), why);
+}
+
+#define UBX_SILENT_MS          3000            // ms without messages before the fix is cleared
+void UBXCheckSilent(void)
+{
+  if (!UBX.state.gpsFix || !UBX.state.last_msg_millis) { return; }
+  if ((millis() - UBX.state.last_msg_millis) < UBX_SILENT_MS) { return; }
+  UBX.state.gpsFix = 0;
+  AddLog(LOG_LEVEL_INFO, PSTR("UBX: receiver silent, fix cleared"));
+}
+
+void UBXCheckPPSLost(void)
+{
+  if (!UBX.mode.ppsLocked) { return; }
+  if ((micros() - UBX.state.ppsPrevMicros) < (2 * 1000000U)) { return; }
+  UBXDropPPS(PSTR("lost"));
+}
+
+bool UBXNtpSource(NtpTimeBase* base, uint32_t* utc, uint32_t* boundary_us)
+{
+  if (TasmotaGlobal.global_state.network_down || !UBX.mode.runningNTP) { return false; }
+  return RtcNtpRequest(RTC_NTP_OWNER_GPS, base, utc, boundary_us);
+}
+#endif  // USE_NTP_SERVER
 
 void UBXLoop(void)
 {
@@ -805,6 +1350,11 @@ void UBXLoop(void)
     case MT_NAV_TIME:
       UBXHandleTIME();
       break;
+#ifdef USE_NTP_SERVER
+    case MT_TIM_TP:
+      UBXHandleTIMTP();
+      break;
+#endif  // USE_NTP_SERVER
 #ifdef USE_GPS_VELOCITY
     case MT_NAV_VEL:
       UBXHandleVEL();
@@ -847,7 +1397,11 @@ const char kFLOGstate[] PROGMEM = "Ready|Recording";
 const char HTTP_BTN_FLOG_DL[] PROGMEM = "<button><a href='/UBX'>Download GPX-File</a></button>";
 #endif  // USE_FLOG
 
+#ifdef USE_NTP_SERVER
 const char HTTP_SNS_NTPSERVER[] PROGMEM = "{s}GPS NTP server{m}Active{e}";
+const char HTTP_SNS_NTPPPS[] PROGMEM = "{s}GPS NTP server{m}Active (%s){e}";
+const char HTTP_SNS_NTPSTATE[] PROGMEM = "{s}NTP stratum{m}%d, drift %d ppb{e}";
+#endif  // USE_NTP_SERVER
 
 const char HTTP_SNS_GPS[] PROGMEM = "{s}GPS " D_SAT_FIX "{m}%s{e}"
                                     "{s}GPS " D_LATITUDE "{m}%s{e}"
@@ -942,10 +1496,18 @@ void UBXShow(bool json) {
     }
 #endif  // USE_FLOG
 
+#ifdef USE_NTP_SERVER
     if (UBX.mode.runningNTP) {
       WSContentSeparator(0);
-      WSContentSend_P(HTTP_SNS_NTPSERVER);
+      if (UBX.mode.ppsLocked) {
+        WSContentSend_P(HTTP_SNS_NTPPPS, UBXPulseSteered() ? PSTR("PPS, GNSS locked")
+                                                           : PSTR("PPS, free running"));
+      } else {
+        WSContentSend_P(HTTP_SNS_NTPSERVER);
+      }
+      WSContentSend_P(HTTP_SNS_NTPSTATE, Rtc.stratum, Rtc.drift_ppb);
     }
+#endif  // USE_NTP_SERVER
 
 #endif  // USE_WEBSERVER
   }
@@ -964,6 +1526,53 @@ bool UBXCmd(void)
   }
   return serviced;
 }
+
+const char kUBXCommands[] PROGMEM = "Gps|"  // Prefix
+#ifdef USE_NTP_SERVER
+  D_CMND_NTPSERVER "|Pps|"
+#endif  // USE_NTP_SERVER
+  "Reset";
+
+void (* const UBXCommand[])(void) PROGMEM = {
+#ifdef USE_NTP_SERVER
+  &CmndGpsNtpServer, &CmndGpsPps,
+#endif  // USE_NTP_SERVER
+  &CmndGpsReset };
+
+// GpsReset 0|1|2 - Hot, warm or cold start of the receiver, configuration is kept
+void CmndGpsReset(void) {
+  static const uint16_t bbr[3] = { 0x0000, 0x0001, 0xFFFF };
+  if ((XdrvMailbox.payload < 0) || (XdrvMailbox.payload > 2) || !UBXSerial) {
+    ResponseCmndChar_P(PSTR("0 hot, 1 warm, 2 cold"));
+    return;
+  }
+  uint16_t mask = bbr[XdrvMailbox.payload];
+  uint8_t msg[10] = { 0xB5, 0x62, 0x06, 0x04, 0x04, 0x00, (uint8_t)mask, (uint8_t)(mask >> 8), 0x02, 0x00 };
+  UBXsendChecked(msg, sizeof(msg));
+#ifdef USE_NTP_SERVER
+  UBX.mode.tpAligned = 0;                        // PPS not aligned until the next fix
+#endif  // USE_NTP_SERVER
+  AddLog(LOG_LEVEL_INFO, PSTR("UBX: receiver %s start requested"),
+    (2 == XdrvMailbox.payload) ? PSTR("cold") : (1 == XdrvMailbox.payload) ? PSTR("warm") : PSTR("hot"));
+  ResponseCmndNumber(XdrvMailbox.payload);
+}
+
+#ifdef USE_NTP_SERVER
+void CmndGpsPps(void) {
+  if ((XdrvMailbox.payload == 0) || (XdrvMailbox.payload == 1)) {
+    Settings->sbflag1.gps_pps_off = !XdrvMailbox.payload;
+    if (Settings->sbflag1.gps_pps_off) { UBXDropPPS(PSTR("disabled")); }
+  }
+  ResponseCmndNumber(!Settings->sbflag1.gps_pps_off);
+}
+
+void CmndGpsNtpServer(void) {
+  if (((0 == XdrvMailbox.payload) || (1 == XdrvMailbox.payload)) && !TasmotaGlobal.global_state.network_down) {
+    UBXSelectMode(XdrvMailbox.payload ? 9 : 10);
+  }
+  ResponseCmndStateText(Settings->sbflag1.gps_ntp_server);
+}
+#endif  // USE_NTP_SERVER
 
 /*********************************************************************************************\
  * Interface
@@ -984,8 +1593,18 @@ bool Xsns60(uint32_t function)
           result = UBXCmd();
         }
         break;
+      case FUNC_COMMAND:
+        result = DecodeCommand(kUBXCommands, UBXCommand);
+        break;
+#ifdef USE_NTP_SERVER
+      case FUNC_LOOP:
+      case FUNC_SLEEP_LOOP:
+        UBXHandlePPS();          // First, PPS sets the clock
+        if (UBX.mode.runningNTP) { timeServer.poll(); }
+        break;
+#endif  // USE_NTP_SERVER
       case FUNC_EVERY_50_MSECOND:
-        UBXLoop50msec(); // handles virtual serial port and NTP server
+        UBXLoop50msec();
         break;
       case FUNC_EVERY_100_MSECOND:
 #ifdef USE_FLOG
@@ -994,6 +1613,13 @@ bool Xsns60(uint32_t function)
         {
           UBXLoop();
         }
+#ifdef USE_NTP_SERVER
+        UBXCheckPPSLost();
+        UBXCheckSilent();
+        UBXRestoreNTP();
+#else
+        UBXCheckTimeHeld();
+#endif  // USE_NTP_SERVER
         break;
 #ifdef USE_FLOG
       case FUNC_WEB_ADD_HANDLER:

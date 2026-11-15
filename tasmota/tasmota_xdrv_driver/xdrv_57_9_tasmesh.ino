@@ -124,11 +124,21 @@ void CB_MESHDataReceived(uint8_t *MAC, uint8_t *packet, uint8_t len) {
   mesh_packet_t *_recvPacket = (mesh_packet_t*)packet;
   switch (_recvPacket->type) {
     case PACKET_TYPE_TIME:
+#ifndef USE_NTP_SERVER
       Rtc.utc_time = _recvPacket->senderTime;
+#endif  // USE_NTP_SERVER
       Rtc.user_time_entry = true;
       MESH.lastMessageFromBroker = millis();
+#ifdef USE_NTP_SERVER
+      // Mesh time is in whole seconds, so correct the clock only if it is more than 1 s off
+      if ((MESH.flags.nodeGotTime == 0) || (abs((int32_t)(_recvPacket->senderTime - Rtc.utc_time)) > 1)) {
+        RtcSync("Mesh", _recvPacket->senderTime, RTC_STRATUM_UPSTREAM(0), RTC_PHASE_NONE, RTC_SYNC_AGE_UPSTREAM, true);
+      }
+#endif  // USE_NTP_SERVER
       if (MESH.flags.nodeGotTime == 0) {
+#ifndef USE_NTP_SERVER
         RtcSync("Mesh");
+#endif  // USE_NTP_SERVER
         TasmotaGlobal.rules_flag.system_boot  = 1; // for now we consider the node booted and let trigger system#boot on RULES
       }
       MESH.flags.nodeGotTime = 1;

@@ -1157,4 +1157,11 @@
   #define CODE_IMAGE_STR "tasmota"
 #endif
 
+#ifndef USE_GPS
+#undef GPS_NTP_SERVER                                  // Needs the GPS driver
+#endif
+#if defined(GPS_NTP_SERVER) || defined(RTC_NTP_SERVER)
+#define USE_NTP_SERVER                                 // NTP server clock with GPS PPS, drift and upstream phase
+#endif
+
 #endif  // _TASMOTA_CONFIGURATIONS_H_

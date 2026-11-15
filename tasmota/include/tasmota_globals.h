@@ -70,6 +70,11 @@ String EthernetMacAddress(void);
 
 #include "include/tasmota_configurations.h"            // Preconfigured configurations
 
+#include "NTPTimeBase.h"                               // NTP server time quality; always included, the generated .ino prototypes need its types
+#include "DriftEst.h"                                  // Crystal drift estimator
+#include "RtcClock.h"                                  // Clock source selection and tick
+#include "NtpUdp.h"                                    // ESP32 raw lwIP UDP for NTP
+
 /*********************************************************************************************\
  * Final overrides
 \*********************************************************************************************/
