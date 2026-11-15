@@ -660,6 +660,9 @@ void RtcDriftSet(uint8_t source, int32_t ppb, bool moved, uint32_t span) {
 #ifdef ESP32
   RtcDriftKeepSave(ppb, source, span);                 // Keep across a restart
 #endif  // ESP32
+#ifdef USE_RTC_CHIP_HOLDOVER
+  RtcChipDriftStore(ppb);                              // Keep across a power loss
+#endif  // USE_RTC_CHIP_HOLDOVER
 }
 
 // Debug log name of a drift source

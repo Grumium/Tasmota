@@ -1163,5 +1163,8 @@
 #if defined(GPS_NTP_SERVER) || defined(RTC_NTP_SERVER)
 #define USE_NTP_SERVER                                 // NTP server clock with GPS PPS, drift and upstream phase
 #endif
+#if !defined(USE_NTP_SERVER) || !defined(USE_RTC_CHIPS)
+#undef USE_RTC_CHIP_HOLDOVER                           // Needs an NTP server and an RTC chip
+#endif
 
 #endif  // _TASMOTA_CONFIGURATIONS_H_
