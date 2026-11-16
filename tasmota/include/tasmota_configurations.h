@@ -1163,5 +1163,8 @@
 #if defined(USE_GPS) && !defined(USE_NTP_SERVER)
 #undef RTC_NTP_SERVER                                  // The simple GPS NTP server has port 123
 #endif
+#if !defined(USE_NTP_SERVER) || !defined(USE_RTC_CHIPS)
+#undef USE_RTC_CHIP_HOLDOVER                           // Needs the NTP server clock and an RTC chip
+#endif
 
 #endif  // _TASMOTA_CONFIGURATIONS_H_

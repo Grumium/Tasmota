@@ -1221,12 +1221,24 @@ void UBXHandleTIME()
         } else {
           uint32_t b_ms = millis(), b_us = arrival;
           uint8_t timed = RTC_STRATUM_GPS_FREE;  // Message arrival only, fix or not: valid upstream time stays
+#ifdef USE_RTC_CHIP_HOLDOVER
+          uint32_t chip_err = 0;
+          bool chip_placed = !edge_seen && RtcChipPlaceSecond(UBX.rec_buffer.values.time, arrival, &b_ms, &b_us, &chip_err);
+          if (chip_placed) { timed = stratum; }  // The RTC chip placed the second
+#endif  // USE_RTC_CHIP_HOLDOVER
           published = RtcSetBoundary(UBX.rec_buffer.values.time, b_ms, b_us, timed, 2, RTC_PHASE_NONE, true);
           if (published && traceable) {          // Fresh GNSS time: the claim does not age
             RTC_PAIR_LOCK();
             Rtc.last_traceable = TasmotaGlobal.uptime;
             RTC_PAIR_UNLOCK();
           }
+#ifdef USE_RTC_CHIP_HOLDOVER
+          if (published && chip_placed) {
+            RTC_PAIR_LOCK();
+            Rtc.chip_placed_us = chip_err;
+            RTC_PAIR_UNLOCK();
+          }
+#endif  // USE_RTC_CHIP_HOLDOVER
         }
       } else if (!published) {
         DEBUG_SENSOR_LOG(PSTR("UBX: no boundary this second, age %d"), edge_age);
