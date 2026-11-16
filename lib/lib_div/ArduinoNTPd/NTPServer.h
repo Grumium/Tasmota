@@ -54,7 +54,7 @@ private:
 };
 
 
-// Implementation in this header, compiled with the firmware
+// Implementation in this header: it is compiled with the firmware's defines (USE_NTP_SERVER, see NtpWire.h)
 #include <WiFiUdp.h>
 #include "NTPPacket.h"
 #include "NtpWire.h"
@@ -77,7 +77,7 @@ static inline void NtpRecv(NtpUdp *u, struct udp_pcb *pcb, struct pbuf *p, const
       NtpFillReply(packet, utc, (uint32_t)since, base);
       struct pbuf *reply = pbuf_alloc(PBUF_TRANSPORT, NtpPacket::PACKET_SIZE, PBUF_RAM);
       if (reply) {
-        NtpSetTransmit(packet, utc, (uint32_t)since + (micros() - rxUs));
+        NtpSetTransmit(packet, utc, (uint32_t)since + (micros() - rxUs), NTP_TICK_PPB(base));
         packet.swapEndian();
         memcpy(reply->payload, packet.packet(), NtpPacket::PACKET_SIZE);
         err_t err = udp_sendto(pcb, reply, addr, port);
@@ -127,7 +127,7 @@ inline void NtpServer::poll()
   timeServerPort_.read((char*)&packet, NtpPacket::PACKET_SIZE);
   if (!NtpRequestOk(packet, packetDataSize)) { return; }
   NtpFillReply(packet, utc, elapsed, base);
-  NtpSetTransmit(packet, utc, micros() - boundaryUs);
+  NtpSetTransmit(packet, utc, micros() - boundaryUs, NTP_TICK_PPB(base));
   packet.swapEndian();
   timeServerPort_.beginPacket(timeServerPort_.remoteIP(), timeServerPort_.remotePort());
   timeServerPort_.write((const uint8_t *)packet.packet(), NtpPacket::PACKET_SIZE);

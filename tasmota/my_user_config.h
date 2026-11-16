@@ -849,7 +849,7 @@
 //    #define USE_RX8025                           // [I2cDriver90] Enable RX8025 RTC support both I2C buses on ESP32 (I2C address 0x32) 
 //    #define USE_RX8030                           // [I2cDriver90] Enable RX8030 RTC - used by #23855 - support both I2C buses on ESP32 (I2C address 0x32) (+0k7 code)
 //    #define USE_PCF85063                         // [I2cDriver92] Enable PCF85063 RTC support (I2C address 0x51)
-//    #define RTC_NTP_SERVER                       // Enable NTP server with time from the RTC chip (+1k8 code)
+//    #define RTC_NTP_SERVER                       // Enable NTP server with time from the RTC chip (+1k8 code); with USE_NTP_SERVER from the clock
 
 //  #define USE_AGS02MA                            // [I2cDriver95] Enable AGS02MA Air Quality Sensor (I2C address 0x1A)
 
@@ -977,6 +977,7 @@
 //#define USE_RDM6300                              // Add support for RDM6300 125kHz RFID Reader (+0k8)
 //#define USE_IBEACON                              // Add support for bluetooth LE passive scan of ibeacon devices (uses HM17 module)
 //#define USE_GPS                                  // Add support for u-blox GPS, sets the time from GPS; simple NTP server with Sensor60 9 (+4k code, +132 bytes RAM)
+//  #define USE_NTP_SERVER                         // ESP32: NTP server clock for the GPS and RTC chip servers: GPS PPS, drift correction, upstream NTP phase (+10k code, +368 bytes RAM)
 //  #define USE_FLOG                               // Add support for GPS logging in OTA's Flash (Experimental) (+2k9 code, +8 bytes RAM)
 //#define USE_HM10                                 // (ESP8266 only) Add support for HM-10 as a BLE-bridge (+17k code)
 //#define USE_HRXL                                 // Add support for MaxBotix HRXL-MaxSonar ultrasonic range finders (+0k7)

@@ -1157,7 +1157,10 @@
   #define CODE_IMAGE_STR "tasmota"
 #endif
 
-#ifdef USE_GPS
+#ifdef ESP8266
+#undef USE_NTP_SERVER                                  // The NTP server clock needs an ESP32
+#endif
+#if defined(USE_GPS) && !defined(USE_NTP_SERVER)
 #undef RTC_NTP_SERVER                                  // The simple GPS NTP server has port 123
 #endif
 

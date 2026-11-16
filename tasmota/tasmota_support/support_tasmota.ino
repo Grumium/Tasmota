@@ -1101,6 +1101,9 @@ bool MqttShowSensor(bool call_show_sensor) {
 #endif // FIRMWARE_MINIMAL
 
   bool json_data_available = (ResponseLength() - json_data_start);
+#ifdef USE_NTP_SERVER
+  RtcResponseAppendTimeSrc();                    // "TimeSrc", no sensor data by itself
+#endif  // USE_NTP_SERVER
   MqttAppendSensorUnits();
   ResponseJsonEnd();
 
