@@ -1157,4 +1157,8 @@
   #define CODE_IMAGE_STR "tasmota"
 #endif
 
+#ifdef USE_GPS
+#undef RTC_NTP_SERVER                                  // The simple GPS NTP server has port 123
+#endif
+
 #endif  // _TASMOTA_CONFIGURATIONS_H_

@@ -70,6 +70,8 @@ String EthernetMacAddress(void);
 
 #include "include/tasmota_configurations.h"            // Preconfigured configurations
 
+#include "NTPTimeBase.h"                               // NTP server time quality; always included, the generated .ino prototypes need its types
+
 /*********************************************************************************************\
  * Final overrides
 \*********************************************************************************************/

@@ -2,6 +2,7 @@
   xsns_56_rtc_chips.ino - RTC chip support for Tasmota
 
   SPDX-FileCopyrightText: 2022 Theo Arends
+  SPDX-FileCopyrightText: 2026 Jan-David Förster
 
   SPDX-License-Identifier: GPL-3.0-only
 */
@@ -35,13 +36,11 @@
  * #define USE_RX8025
  *   RX8025 at I2C address 0x32
  *   Used by MSB Master G2
+ * #define RTC_NTP_SERVER
+ *   NTP server from the chip's time in whole seconds
 \*********************************************************************************************/
 
 #define XDRV_56             56
-
-#ifdef USE_GPS                     // GPS driver has it's own NTP server
-#undef RTC_NTP_SERVER              // Disable NTP server (+0k8 code)
-#endif
 
 struct {
   uint32_t (* ReadTime)(void);
@@ -1036,8 +1035,6 @@ int32_t RtcChipMemWrite(uint8_t *buffer, uint32_t size) {
 #include "NTPServer.h"
 #include "NTPPacket.h"
 
-#define NTP_MILLIS_OFFSET   50
-
 const char kRtcChipCommands[] PROGMEM = "Rtc|"  // Prefix
   D_CMND_NTPSERVER;
 
@@ -1045,30 +1042,58 @@ void (* const RtcChipCommand[])(void) PROGMEM = {
   &CmndRtcNtpServer };
 
 NtpServer RtcChipTimeServer(PortUdp);
+bool rtc_chip_ntp_listening = false;             // With the clock the port owner says it
 
-void RtcChipEverySecond(void) {
-  static bool ntp_server_started = false;
+bool RtcChipNtpSource(NtpTimeBase* base, uint32_t* utc, uint32_t* boundary_us) {
+  if (TasmotaGlobal.global_state.network_down || !Settings->sbflag1.local_ntp_server) { return false; }
+  // System time with the sub-second from the last NTP sync; runs off with the crystal until the next
+#ifdef ESP32
+  RTC_PAIR_LOCK();                               // Not the tick: it is not atomic for the lwIP thread
+  int64_t now_us = esp_timer_get_time();
+  int64_t utc_us = Rtc.utc_ms_offset * 1000 + now_us;
+  RTC_PAIR_UNLOCK();
+  *utc = (uint32_t)(utc_us / 1000000);
+  *boundary_us = (uint32_t)(now_us - (utc_us % 1000000));
+#else
+  *utc = Rtc.utc_time;
+  *boundary_us = micros() - (millis() - Rtc.millis) * 1000 - Rtc.nanos / 1000;
+#endif  // ESP32
+  NtpBaseFixed(base, NTP_SRC_CHIP, RTC_STRATUM_CHIP, RTC_EPOCH_CHIP_US);
+  return true;
+}
 
-  if (TasmotaGlobal.global_state.network_down) { return; }  // Exception on ESP32 if network is down (#17338)
-
-  if (Settings->sbflag1.local_ntp_server && (Rtc.utc_time > START_VALID_TIME)) {
-    if (!ntp_server_started) {
-      if (RtcChipTimeServer.beginListening()) {
-        ntp_server_started = true;
-        AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: NTP server started"));
-      }
-    } else {
-      RtcChipTimeServer.processOneRequest(Rtc.utc_time, NTP_MILLIS_OFFSET);
-    }
+// Open NTP port 123 for the chip server, unless already used
+void RtcChipNtpListen(void) {
+  if (rtc_chip_ntp_listening) { return; }
+  RtcChipTimeServer.setSource(RtcChipNtpSource, nullptr);
+  if (RtcChipTimeServer.beginListening()) {
+    rtc_chip_ntp_listening = true;
+    AddLog(LOG_LEVEL_DEBUG, PSTR("RTC: NTP server started"));
   }
 }
 
+void RtcChipNtpEverySecond(void) {
+  if (TasmotaGlobal.global_state.network_down) { return; }  // Exception on ESP32 if network is down (#17338)
+  if (!RtcChip.detected) { return; }
+  if (!Settings->sbflag1.local_ntp_server || (Rtc.utc_time <= START_VALID_TIME)) { return; }
+  RtcChipNtpListen();
+}
+
 void CmndRtcNtpServer(void) {
-  // RtcChipNtpServer 0 or 1
-  if ((XdrvMailbox.payload >= 0) && !TasmotaGlobal.global_state.network_down) {
+  if (!RtcChip.detected) {
+    AddLog(LOG_LEVEL_INFO, PSTR("RTC: no chip, NTP server not available"));
     Settings->sbflag1.local_ntp_server = 0;
-    if ((XdrvMailbox.payload &1) && RtcChipTimeServer.beginListening()) {
+    ResponseCmndStateText(0);
+    return;
+  }
+  if (((0 == XdrvMailbox.payload) || (1 == XdrvMailbox.payload)) && !TasmotaGlobal.global_state.network_down) {
+    if (XdrvMailbox.payload) {
       Settings->sbflag1.local_ntp_server = 1;
+      RtcChipNtpListen();
+    } else {
+      Settings->sbflag1.local_ntp_server = 0;
+      RtcChipTimeServer.stopListening();
+      rtc_chip_ntp_listening = false;
     }
   }
   ResponseCmndStateText(Settings->sbflag1.local_ntp_server);
@@ -1084,8 +1109,12 @@ bool Xdrv56(uint32_t function) {
 
 #ifdef RTC_NTP_SERVER
   switch (function) {
+    case FUNC_LOOP:
+    case FUNC_SLEEP_LOOP:
+      RtcChipTimeServer.poll();
+      break;
     case FUNC_EVERY_SECOND:
-      RtcChipEverySecond();
+      RtcChipNtpEverySecond();
       break;
     case FUNC_COMMAND:
       result = DecodeCommand(kRtcChipCommands, RtcChipCommand);

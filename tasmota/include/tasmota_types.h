@@ -284,7 +284,7 @@ typedef union {
     uint32_t miel_hvac_mb_enable : 1;      // bit 15 (v15.6.0.1) - CMND_HVACMODBUS - Enable MiEL HVAC Modbus RTU slave
     uint32_t spare16 : 1;                  // bit 16
     uint32_t spare17 : 1;                  // bit 17
-    uint32_t spare18 : 1;                  // bit 18
+    uint32_t gps_ntp_server : 1;           // bit 18 (v16.0.0.5) - CMND_SENSOR60 9 - Enable local NTP server from GPS
     uint32_t spare19 : 1;                  // bit 19
     uint32_t spare20 : 1;                  // bit 20
     uint32_t spare21 : 1;                  // bit 21

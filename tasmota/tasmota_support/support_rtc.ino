@@ -56,6 +56,25 @@ struct RTC {
   bool user_time_entry = false;               // Override NTP by user setting
 } Rtc;
 
+#ifdef ESP32
+// Protects the clock values read by the NTP server in the lwIP thread
+portMUX_TYPE rtc_pair_mux = portMUX_INITIALIZER_UNLOCKED;
+#endif  // ESP32
+
+// Empty on ESP8266
+static inline __attribute__((always_inline)) void RtcPairLock(void) {
+#ifdef ESP32
+  portENTER_CRITICAL(&rtc_pair_mux);
+#endif  // ESP32
+}
+static inline __attribute__((always_inline)) void RtcPairUnlock(void) {
+#ifdef ESP32
+  portEXIT_CRITICAL(&rtc_pair_mux);
+#endif  // ESP32
+}
+#define RTC_PAIR_LOCK()    RtcPairLock()
+#define RTC_PAIR_UNLOCK()  RtcPairUnlock()
+
 uint32_t UtcTime(void) {
   return Rtc.utc_time;
 }
@@ -471,6 +490,36 @@ void RtcSetTimeOfDay(uint32_t local_time) {
   settimeofday(&tv, nullptr);
 }
 
+/*********************************************************************************************\
+ * NTP port 123 is used by the GPS or the RTC chip server, whichever starts first. It serves the
+ * best time source
+\*********************************************************************************************/
+
+#define RTC_NTP_OWNER_NONE  0
+#define RTC_NTP_OWNER_GPS   1
+#define RTC_NTP_OWNER_CHIP  2
+
+struct {
+  uint8_t bound = RTC_NTP_OWNER_NONE;    // Server using port 123
+} RtcNtp;
+
+bool RtcNtpBind(uint8_t owner) {
+  if (RTC_NTP_OWNER_NONE == RtcNtp.bound) { RtcNtp.bound = owner; }
+  return (owner == RtcNtp.bound);
+}
+
+bool RtcNtpBoundBy(uint8_t owner) {
+  return (owner == RtcNtp.bound);
+}
+
+void RtcNtpRelease(uint8_t owner) {
+  if (owner == RtcNtp.bound) {
+    RtcNtp.bound = RTC_NTP_OWNER_NONE;
+    DEBUG_CORE_LOG(PSTR("RTC: NTP port released by %s"),
+      (RTC_NTP_OWNER_GPS == owner) ? PSTR("GPS") : PSTR("chip"));
+  }
+}
+
 void RtcSecond(void) {
   static uint32_t last_sync = 0;
   static bool mutex = false;
@@ -485,7 +534,13 @@ void RtcSecond(void) {
     last_sync = Rtc.utc_time;
 #ifdef ESP32
     // Reference for RtcUtcMillis(), only taken at time sync (see RtcUtcMillis() comments)
+#ifdef RTC_NTP_SERVER
+    RTC_PAIR_LOCK();                          // Read by the RTC chip NTP server in the lwIP thread
+#endif  // RTC_NTP_SERVER
     Rtc.utc_ms_offset = (int64_t)Rtc.utc_time * 1000 + Rtc.nanos / 1000000 - esp_timer_get_time() / 1000;
+#ifdef RTC_NTP_SERVER
+    RTC_PAIR_UNLOCK();
+#endif  // RTC_NTP_SERVER
 #endif
 
     if (Rtc.restart_time == 0) {
