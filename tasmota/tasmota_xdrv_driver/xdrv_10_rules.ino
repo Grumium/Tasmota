@@ -998,8 +998,18 @@ void RulesEvery50ms(void)
   }
 }
 
+// Is a rule or Berry rule waiting for sensor data? Building it costs one sensor read each pass
+bool RulesSensorDataWanted(void) {
+  if (Settings->rule_enabled) { return true; }
+#ifdef USE_BERRY
+  return BerryRulesWanted();
+#else
+  return false;
+#endif
+}
+
 void RulesEvery100ms(void) {
-  if ((Settings->rule_enabled || BERRY_RULES) && !Rules.busy && (TasmotaGlobal.uptime > 4)) {  // Any rule enabled and allow 4 seconds start-up time for sensors (#3811)
+  if (RulesSensorDataWanted() && !Rules.busy && (TasmotaGlobal.uptime > 4)) {  // Any rule enabled and allow 4 seconds start-up time for sensors (#3811)
     if (GetNextSensor()) {
       RulesProcessEvent(ResponseData());
     }
