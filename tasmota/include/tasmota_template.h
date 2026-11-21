@@ -554,7 +554,7 @@ const char kSensorNamesFixed[] PROGMEM =
 #define MAX_BL0942_RX            8  // Baudrates 1/5 (4800), 2/6 (9600), 3/7 (19200), 4/8 (38400), Support Positive values only 1..4, Support also negative values 5..8
 #define MAX_CSE7761              2  // Model 1/2 (DUALR3), 2/2 (POWCT)
 #define MAX_TWAI                 SOC_TWAI_CONTROLLER_NUM
-#define MAX_GPS_RX               3  // Baudrates 1 (9600), 2 (19200), 3 (38400)
+#define MAX_GPS_RX               4  // Baudrates 1 (9600), 2 (19200), 3 (38400), 4 (115200)
 #ifdef ESP32
 #define MAX_MKSKYBLU_IF          8  // MakeSkyBlue solar charger: ESP32-NRG supports up to 8 phases
 #else

@@ -673,8 +673,8 @@ void UBXDetect(void) {
   UBX.mode.init = 0;
   if (!(PinUsed(GPIO_GPS_RX, GPIO_ANY) && PinUsed(GPIO_GPS_TX))) { return; }
 
-  uint32_t option = GetPin(Pin(GPIO_GPS_RX, GPIO_ANY)) - AGPIO(GPIO_GPS_RX);  // 0 .. 2
-  uint32_t baudrate = 9600 << option;  // Support 1 (9600), 2 (19200), 3 (38400)
+  uint32_t option = GetPin(Pin(GPIO_GPS_RX, GPIO_ANY)) - AGPIO(GPIO_GPS_RX);  // 0 .. 3
+  uint32_t baudrate = (option < 3) ? 9600 << option : 115200;  // 1 (9600), 2 (19200), 3 (38400), 4 (115200)
   UBXSerial = new TasmotaSerial(Pin(GPIO_GPS_RX, GPIO_ANY), Pin(GPIO_GPS_TX), 1, 0, UBX_SERIAL_BUFFER_SIZE); // 64 byte buffer is NOT enough
   if (!UBXSerial->begin(baudrate)) { return; }
 
